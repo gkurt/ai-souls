@@ -24,6 +24,7 @@ pub const settings_window_label = "main";
 /// namespace, but keeping them globally distinct makes the log readable.
 const key_poll_timer: u64 = 1;
 const key_anim_timer: u64 = 2;
+const key_sound_timer: u64 = 3;
 const key_config_read: u64 = 10;
 const key_config_write: u64 = 11;
 const key_trigger_read: u64 = 12;
@@ -53,8 +54,38 @@ const anim_interval_ms: u64 = 16;
 const fade_in_ms: u32 = 320;
 const fade_out_ms: u32 = 620;
 
+/// How long after a screen opens its sound is started.
+///
+/// Starting audio COSTS the message loop. Media Foundation resolves the
+/// source and brings up a session synchronously, and once it is running
+/// its position and spectrum reports crowd out the animation timer.
+/// Measured as animation advances during the 320 ms fade-in, three
+/// screens each:
+///
+///     silent screen        8 advances
+///     sound started at 0   1 advance
+///
+/// One advance cannot draw a fade, so the banner appeared to snap on
+/// late — "the first second or two isn't visible", and only ever with
+/// the sound on. Deferring the sound past the fade puts that cost in
+/// the hold, where nothing is moving and nobody can see it.
+///
+/// It is also just better: the type settles, and THEN the gong lands.
+const sound_delay_ms: u64 = fade_in_ms + 20;
+
 pub const status_capacity = 160;
 pub const StatusText = config_mod.Text(status_capacity);
+
+/// A gap between two animation frames longer than this did not happen
+/// because the machine was busy — it happened because the message loop
+/// was not running at all. The worst honest gap measured on a screen
+/// nothing was blocking is 66 ms.
+const stall_threshold_ms: i64 = 250;
+
+/// Total time `advanceOverlay` will refuse to count. Past this the
+/// screen gives up and jumps to wherever the clock says it is: a banner
+/// stuck on the glass forever is a worse failure than one that snaps.
+const max_stall_skip_ms: u32 = 4000;
 
 pub const Overlay = struct {
     active: bool = false,
@@ -62,6 +93,12 @@ pub const Overlay = struct {
     started_ms: i64 = 0,
     elapsed_ms: u32 = 0,
     duration_ms: u32 = 2600,
+    /// Wall clock at the previous `advanceOverlay`, so the next one can
+    /// tell a slow frame from a stopped clock.
+    last_advance_ms: i64 = 0,
+    /// How much frozen time has been forgiven so far, against
+    /// `max_stall_skip_ms`.
+    stall_skipped_ms: u32 = 0,
 
     /// 0..1 ink strength for the current moment: rise, hold, fall.
     pub fn opacity(self: *const Overlay) f32 {
@@ -77,6 +114,30 @@ pub const Overlay = struct {
             return smoothstep(remaining / fall);
         }
         return 1;
+    }
+
+    /// Where the fall begins. A duration shorter than the fall itself
+    /// starts falling immediately.
+    fn fadeStart(self: *const Overlay) i64 {
+        return @max(0, @as(i64, self.duration_ms) - @as(i64, fade_out_ms));
+    }
+
+    /// How much of a `gap`-long freeze ending at `now` to refuse to
+    /// count, so the fade-out survives it. Pure arithmetic on the
+    /// overlay's own clock; the caller adds it to `started_ms`.
+    ///
+    ///   frozen entirely inside the hold  -> 0, it was holding anyway
+    ///   frozen across the top of the fade -> just the overshoot
+    ///   frozen during the fade            -> all of it
+    fn forgive(self: *Overlay, now: i64, gap: i64) i64 {
+        const at = now - self.started_ms;
+        const before = at - gap;
+        const fade = self.fadeStart();
+        const target = if (before > fade) before else @min(at, fade);
+        const budget: i64 = @intCast(max_stall_skip_ms - self.stall_skipped_ms);
+        const skip = @max(0, @min(at - target, budget));
+        self.stall_skipped_ms += @intCast(skip);
+        return skip;
     }
 
     /// The headline drifts up a few points as it fades in — the Souls
@@ -121,6 +182,11 @@ pub fn headlineSize(screen_width: f32) f32 {
 /// (An opaque band of the same size measures 28, because it regains the
 /// Direct2D path — that is what `CLAUDE_SOULS_OPAQUE=1` buys, at the
 /// cost of the bar no longer being see-through.)
+///
+/// Those runs all had a sound playing, which was independently holding
+/// the framerate down (see `sound_delay_ms`); the ratios between them
+/// are the point, not the absolute numbers. A screen now runs at
+/// roughly 22 fps whether or not it makes a noise.
 ///
 /// The height guard is for the freak case of a very wide, very short
 /// display, where 2.5x a width-derived headline could otherwise ask for
@@ -236,6 +302,7 @@ pub const Msg = union(enum) {
     audio_event: native_sdk.EffectAudio,
     poll_tick: native_sdk.EffectTimer,
     anim_tick: native_sdk.EffectTimer,
+    sound_tick: native_sdk.EffectTimer,
 
     /// The catalog list and the detail pane both bind these; the rest
     /// arrive from the host.
@@ -248,6 +315,7 @@ pub const Msg = union(enum) {
         "audio_event",
         "poll_tick",
         "anim_tick",
+        "sound_tick",
     };
 };
 
@@ -424,6 +492,10 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
                 ) catch "That sound could not be played.";
                 model.status.set(text);
             }
+            // Whatever else it says, an audio event is a HEARTBEAT — and
+            // during playback it is the only one that arrives. See
+            // `advanceOverlay`.
+            advanceOverlay(model, fx);
         },
 
         .poll_tick => |timer| {
@@ -437,21 +509,84 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         },
         .anim_tick => |timer| {
             if (timer.outcome != .fired) return;
-            if (!model.overlay.active) return;
-            const elapsed = fx.wallMs() - model.overlay.started_ms;
-            if (elapsed < 0) return;
-            model.overlay.elapsed_ms = @intCast(@min(
-                elapsed,
-                @as(i64, @intCast(model.overlay.duration_ms)),
-            ));
-            if (model.overlay.elapsed_ms >= model.overlay.duration_ms) {
-                // Presence is visibility: clearing the flag closes the
-                // window on the next reconcile.
-                model.overlay.active = false;
-                fx.cancelTimer(key_anim_timer);
-                fx.stopAudio();
-            }
+            advanceOverlay(model, fx);
         },
+        .sound_tick => |timer| {
+            if (timer.outcome != .fired) return;
+            // The screen may already be over — a cancelled timer can
+            // still have one fire in flight, and nothing should play
+            // over an empty overlay.
+            if (!model.overlay.active) return;
+            const entry = &model.config.events[model.overlay.event_index];
+            playSound(model, fx, entry.sound, entry.volume);
+        },
+    }
+}
+
+/// Move the screen to wherever the wall clock says it is, and end it
+/// when its time is up.
+///
+/// Driven from TWO clocks, because on Windows neither one is enough.
+///
+/// The animation timer is an `fx` timer, which the Win32 host services
+/// with `SetTimer` — and `WM_TIMER` is the lowest-priority message
+/// there is, delivered only when the queue is otherwise empty. Playing
+/// a sound fills that queue: the audio backend posts a position report
+/// and a spectrum frame every ~40 ms each, and posted messages keep
+/// their place ahead of a timer. Measured over the first second of a
+/// screen fired after the app had been idle:
+///
+///     silent screen      28 timer ticks
+///     screen with sound   1 timer tick
+///
+/// One tick cannot draw a 320 ms fade, so the banner used to sit
+/// invisible and then appear at full strength — the "first second or
+/// two isn't there" symptom, and only ever with the sound on.
+///
+/// The audio events are the thing crowding the timer out, so they are
+/// also the thing that reliably arrives: during playback they ARE the
+/// frame clock, at ~16-25 Hz. Between them the screen is animated by
+/// whichever clock is actually running.
+///
+/// Both paths are idempotent — this reads the wall clock rather than
+/// counting ticks, so being called twice in a millisecond, or not at
+/// all for fifty, only changes the framerate and never the timing.
+fn advanceOverlay(model: *Model, fx: *Effects) void {
+    if (!model.overlay.active) return;
+    const now = fx.wallMs();
+
+    // A frozen message loop must not be allowed to skip the fade-out.
+    //
+    // Starting a sound blocks the Win32 loop for two solid seconds (see
+    // `sound_delay_ms`) — longer than the hold, so the clock came back
+    // past the end of the screen and the banner vanished without ever
+    // fading. What is deducted here is only the part of the freeze that
+    // would have eaten animation: a screen frozen during its hold is
+    // still holding, and stays up for exactly as long as it was asked
+    // to. Only the overshoot past the top of the fade is given back.
+    if (model.overlay.last_advance_ms != 0) {
+        const gap = now - model.overlay.last_advance_ms;
+        if (gap > stall_threshold_ms) {
+            model.overlay.started_ms += model.overlay.forgive(now, gap);
+        }
+    }
+    model.overlay.last_advance_ms = now;
+
+    const elapsed = now - model.overlay.started_ms;
+    if (elapsed < 0) return;
+    model.overlay.elapsed_ms = @intCast(@min(
+        elapsed,
+        @as(i64, @intCast(model.overlay.duration_ms)),
+    ));
+    if (model.overlay.elapsed_ms >= model.overlay.duration_ms) {
+        // Presence is visibility: clearing the flag closes the window
+        // on the next reconcile.
+        model.overlay.active = false;
+        fx.cancelTimer(key_anim_timer);
+        // A screen shorter than `sound_delay_ms` ends before its sound
+        // was ever due; the pending start has to go with it.
+        fx.cancelTimer(key_sound_timer);
+        fx.stopAudio();
     }
 }
 
@@ -484,12 +619,14 @@ fn showScreen(model: *Model, fx: *Effects, index: usize) void {
     if (index >= souls.event_count) return;
     const entry = &model.config.events[index];
 
+    const now = fx.wallMs();
     model.overlay = .{
         .active = true,
         .event_index = index,
-        .started_ms = fx.wallMs(),
+        .started_ms = now,
         .elapsed_ms = 0,
         .duration_ms = entry.duration_ms,
+        .last_advance_ms = now,
     };
     fx.startTimer(.{
         .key = key_anim_timer,
@@ -497,7 +634,19 @@ fn showScreen(model: *Model, fx: *Effects, index: usize) void {
         .mode = .repeating,
         .on_fire = Effects.timerMsg(.anim_tick),
     });
-    playSound(model, fx, entry.sound, entry.volume);
+    // Silence needs no lead time and costs the loop nothing, so it can
+    // be dealt with now; a real sound waits until the fade has drawn
+    // (see `sound_delay_ms`).
+    if (entry.sound == .none) {
+        fx.stopAudio();
+        return;
+    }
+    fx.startTimer(.{
+        .key = key_sound_timer,
+        .interval_ms = sound_delay_ms,
+        .mode = .one_shot,
+        .on_fire = Effects.timerMsg(.sound_tick),
+    });
 }
 
 fn playSound(model: *Model, fx: *Effects, sound: souls.Sound, volume: u8) void {
@@ -626,6 +775,58 @@ test "the bar fits on screen at any display size" {
     // The short-display guard genuinely binds on that absurd one, so it
     // is not dead code.
     try testing.expect(bandHeight(5120, 300) < headlineSize(5120) * 2.5);
+}
+
+test "a freeze inside the hold costs the screen nothing" {
+    // The banner is static through the hold, so a loop that stops there
+    // and starts again has not skipped anything worth seeing. The screen
+    // still ends when it was asked to.
+    var overlay: Overlay = .{ .active = true, .duration_ms = 2600 };
+    try testing.expectEqual(@as(i64, 1980), overlay.fadeStart());
+    try testing.expectEqual(@as(i64, 0), overlay.forgive(1340, 1000));
+    try testing.expectEqual(@as(u32, 0), overlay.stall_skipped_ms);
+}
+
+test "a freeze that would swallow the fade gives back only the overshoot" {
+    // The two-second audio freeze, exactly: the sound starts at 340 ms
+    // and the loop comes back at 2375, past the top of the fade. The
+    // screen resumes at the fade's first frame, not 395 ms into it.
+    var overlay: Overlay = .{ .active = true, .duration_ms = 2600 };
+    const skip = overlay.forgive(2375, 2035);
+    try testing.expectEqual(@as(i64, 395), skip);
+    // Where the clock now reads: the very top of the fall.
+    overlay.started_ms += skip;
+    overlay.elapsed_ms = @intCast(2375 - overlay.started_ms);
+    try testing.expectEqual(@as(u32, 1980), overlay.elapsed_ms);
+    try testing.expectApproxEqAbs(@as(f32, 1), overlay.opacity(), 0.001);
+}
+
+test "a freeze during the fade is refused outright" {
+    var overlay: Overlay = .{ .active = true, .duration_ms = 2600 };
+    // Already 120 ms into the fall when the loop stopped for 500 ms.
+    try testing.expectEqual(@as(i64, 500), overlay.forgive(2600, 500));
+}
+
+test "forgiveness runs out" {
+    // A screen that is being starved indefinitely has to be allowed to
+    // end. Better a banner that snaps away than one that never leaves.
+    var overlay: Overlay = .{ .active = true, .duration_ms = 2600 };
+    var granted: i64 = 0;
+    var round: i64 = 0;
+    while (round < 40) : (round += 1) {
+        // Each round: frozen for a second, deep inside the fall.
+        granted += overlay.forgive(2600 + round * 1000, 1000);
+    }
+    try testing.expectEqual(@as(i64, max_stall_skip_ms), granted);
+    try testing.expectEqual(max_stall_skip_ms, overlay.stall_skipped_ms);
+}
+
+test "a short screen falls from its first frame" {
+    var overlay: Overlay = .{ .active = true, .duration_ms = config_mod.min_duration_ms };
+    try testing.expect(overlay.duration_ms < fade_out_ms);
+    try testing.expectEqual(@as(i64, 0), overlay.fadeStart());
+    // Nothing on such a screen is holdable, so a freeze is refused whole.
+    try testing.expectEqual(@as(i64, 900), overlay.forgive(900, 900));
 }
 
 test "enabledCount tracks the toggles" {

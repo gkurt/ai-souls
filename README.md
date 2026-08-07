@@ -101,7 +101,8 @@ top and bottom quarter-of-a-headline of it fade out rather than ending
 on a line.
 
 Per event you can set the headline and subtitle, the colour style
-(death / bonfire / victory / soul / hollow / covenant), the sound,
+(death / bonfire / victory / soul / hollow / covenant), the sound
+(gong / choir / chime / ember / thud / you died, or silence),
 the volume, and how long it stays up. Sounds start at 20% — these
 arrive unannounced while you are concentrating, so the first one is an
 accent rather than a jump scare. Changes save themselves; only arming
@@ -120,9 +121,9 @@ touches a hook it did not write. Installing twice is a no-op.
 
 ## Sounds
 
-The five bundled sounds are synthesized from scratch by
+Gong, Choir, Chime, Ember and Thud are synthesized from scratch by
 `tools/make-sounds.mjs` — a few oscillators and envelopes each, no
-samples and nothing lifted from any game. Regenerate them with:
+samples. Regenerate them with:
 
 ```bash
 node tools/make-sounds.mjs
@@ -130,6 +131,13 @@ node tools/make-sounds.mjs
 
 (ffmpeg on PATH does the mp3 encode. mp3 is the one format all three
 platform audio backends decode.)
+
+"You Died" is the exception: it is a supplied recording, not something
+this repo generates, and at seven seconds it is far longer than a
+screen's default 2.6 s — raise that event's duration if you want to hear
+the whole thing. To add your own, drop an mp3 in `assets/sounds/` and
+append it to the `Sound` enum in `src/souls.zig`. Append, never reorder:
+those numbers are what `config.txt` stores.
 
 ## Files
 
@@ -191,6 +199,35 @@ A few things worth knowing:
   priority Win32 message, so a busy frame loop starves them regardless.
   4ms measured 20 fps against 16ms's 21. `timeBeginPeriod(1)` landed
   inside the noise and was dropped.
+- **Starting a sound freezes the message loop for two seconds**, and
+  there is nothing the app can do about it: `playAudio` reaches a host
+  that builds a Media Foundation session, topology and audio renderer
+  synchronously on the loop thread. Measured as the largest gap between
+  two animation frames, three screens each:
+
+  | | frames in 2.6s | largest gap |
+  | --- | --- | --- |
+  | silent | 59-61 | 60-66 ms |
+  | with a sound | 44-52, bunched | **2029-2068 ms** |
+
+  It is a flat cost, not a decode cost: 0.9s/15KB and 7.1s/112KB files
+  both pay 2.03s, and the second and third plays pay it again. Two
+  things follow from it.
+
+  The sound starts *after* the fade-in rather than with it, so the
+  freeze cannot land on the one animation the user is watching for. And
+  `advanceOverlay` refuses to count the part of a freeze that would
+  otherwise skip the fade-out — a screen frozen through its hold was
+  holding anyway, but one that comes back from the freeze already past
+  its own ending vanishes without ever fading, which is exactly what it
+  used to do. Only the overshoot is given back, so a 2.6s screen runs
+  about 3.0s rather than the 4.6s that forgiving the whole freeze would
+  cost. A machine that does not freeze pays none of this.
+- **The bar's soft edges are stacked strips, and they must be plain
+  layout boxes.** There is no gradient fill for widget backgrounds, and
+  the `chrome` builder that does have one is main-canvas only. Built out
+  of `.panel` each strip draws that widget's border, and 48 hairlines
+  through the fade turn the gradient into a flat lighter block.
 - **`CLAUDE_SOULS_OPAQUE=1`** runs the overlay as a solid window: the
   band stops being see-through, and in exchange it regains the Direct2D
   path and runs noticeably smoother. It is also the fallback for

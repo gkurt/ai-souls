@@ -53,6 +53,9 @@ pub const Style = enum(u8) {
 
 /// The bundled sound bank. Files live in `assets/sounds/<file>` and are
 /// resolved relative to the app bundle at runtime.
+///
+/// The order is the cycle order in the settings window, and the numbers
+/// are written to the config file — append, never reorder.
 pub const Sound = enum(u8) {
     none,
     gong,
@@ -60,6 +63,7 @@ pub const Sound = enum(u8) {
     chime,
     ember,
     thud,
+    you_died,
 
     pub const count = @typeInfo(Sound).@"enum".fields.len;
 
@@ -71,6 +75,7 @@ pub const Sound = enum(u8) {
             .chime => "Chime",
             .ember => "Ember",
             .thud => "Thud",
+            .you_died => "You Died",
         };
     }
 
@@ -83,6 +88,7 @@ pub const Sound = enum(u8) {
             .chime => "assets/sounds/chime.mp3",
             .ember => "assets/sounds/ember.mp3",
             .thud => "assets/sounds/thud.mp3",
+            .you_died => "assets/sounds/you-died.mp3",
         };
     }
 
@@ -299,6 +305,34 @@ test "the shipped headline is just the event's name" {
         try std.testing.expectEqualStrings(event.label, event.default_title);
         try std.testing.expectEqualStrings("", event.default_subtitle);
     }
+}
+
+test "every sound but silence names a file, and names a different one" {
+    var seen: [Sound.count][]const u8 = undefined;
+    for (0..Sound.count) |index| {
+        const sound = Sound.fromIndex(@intCast(index));
+        try std.testing.expect(sound.label().len > 0);
+        if (sound == .none) {
+            try std.testing.expectEqualStrings("", sound.path());
+            seen[index] = "";
+            continue;
+        }
+        const path = sound.path();
+        try std.testing.expect(std.mem.startsWith(u8, path, "assets/sounds/"));
+        try std.testing.expect(std.mem.endsWith(u8, path, ".mp3"));
+        for (seen[0..index]) |earlier| {
+            try std.testing.expect(!std.mem.eql(u8, earlier, path));
+        }
+        seen[index] = path;
+    }
+}
+
+test "the sound numbering on disk never moves" {
+    // These integers are what `config.txt` stores. Reordering the enum
+    // would silently re-point every user's saved choices.
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Sound.none));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(Sound.gong));
+    try std.testing.expectEqual(@as(u8, 6), @intFromEnum(Sound.you_died));
 }
 
 test "a matcher that is an alternation carries a readable label" {

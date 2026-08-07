@@ -33,11 +33,24 @@ const band_alpha: f32 = 214;
 /// How many strips each soft edge is cut into.
 ///
 /// Widget backgrounds take a flat `?Color` — there is no gradient fill
-/// at this layer, and the `chrome` builder that does have one is main-
-/// canvas only, so a real vertical gradient is not available to a
-/// declared window. Stacking thin constant-alpha strips gets there:
-/// over a ~26pt edge, 24 of them are about a point each, which is finer
-/// than the eye resolves in a 0.84-alpha wash.
+/// at this layer, and the `chrome` builder that does have one is
+/// main-canvas only, so a real vertical gradient is not reachable from
+/// a declared window. Stacking thin constant-alpha strips gets there:
+/// over a ~26pt edge, 24 of them are about a point each, an alpha step
+/// of 9/255, which is not resolvable by eye.
+///
+/// The strips MUST be plain layout boxes. Built out of `.panel` they
+/// each draw that widget's border, and 48 hairlines through the fade
+/// turn the gradient into a flat lighter block — which is exactly what
+/// it looked like. Measured, ramping 0 -> 214 over four fat strips:
+///
+///     .panel                       0.09 [seam] 0.30 [seam] 0.52 ...
+///     .panel, border set clear     0.10 [seam] 0.31 [seam] 0.53 ...
+///     column                       0.10        0.31        0.53 ...
+///
+/// where each [seam] was one or two rows of a completely different
+/// value — first bright, then dark once the border colour was cleared,
+/// and gone entirely once the widget was.
 const fade_steps = 24;
 
 /// Souls screens shout.
@@ -62,9 +75,12 @@ fn softEdge(ui: *Ui, out: []Node, edge: f32, descending: bool) Node {
         const step: f32 = @floatFromInt(index);
         // Sample at the strip's middle, and ease rather than ramp
         // linearly: a straight ramp still shows its two ends as creases.
+        // Sample at the strip's middle, and ease rather than ramp
+        // linearly: a straight ramp leaves a faint crease at both ends
+        // of the fade, where the rate of change stops abruptly.
         const t = (step + 0.5) / steps;
         const eased = smoothstep(if (descending) 1 - t else t);
-        slot.* = ui.el(.panel, .{
+        slot.* = ui.column(.{
             .height = edge / steps,
             .style = .{
                 .background = canvas.Color.rgba8(6, 5, 5, @intFromFloat(@round(band_alpha * eased))),

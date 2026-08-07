@@ -135,6 +135,96 @@ test "the overlay stays up mid-flight" {
     try testing.expect(harness.model.overlay.opacity() > 0);
 }
 
+test "an audio event advances the overlay too" {
+    // The regression: with a sound playing, the Win32 host starves the
+    // animation timer to about one tick per second, so the fade never
+    // rendered. Audio events are the clock that still arrives.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.send(.preview);
+    harness.model.overlay.started_ms -= 100;
+    harness.send(.{ .audio_event = .{ .key = 30, .kind = .position } });
+
+    try testing.expect(harness.model.overlay.active);
+    try testing.expect(harness.model.overlay.elapsed_ms > 0);
+    try testing.expect(harness.model.overlay.opacity() > 0);
+}
+
+test "an audio event can also end the screen" {
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.send(.preview);
+    harness.model.overlay.started_ms -= @intCast(harness.model.overlay.duration_ms + 50);
+    harness.send(.{ .audio_event = .{ .key = 30, .kind = .position } });
+
+    try testing.expect(!harness.model.overlay.active);
+}
+
+test "the sound waits until the fade has drawn" {
+    // Starting audio stalls the Win32 message loop, which ate the
+    // fade-in when it happened at t=0. The screen opens first.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    const index = souls.indexOfKey("tool_failed").?;
+    harness.model.selected = index;
+    try testing.expect(harness.model.config.events[index].sound != .none);
+
+    harness.send(.preview);
+    try testing.expect(harness.model.overlay.active);
+    // Nothing has been asked to play yet.
+    try testing.expectEqual(@as(usize, 0), harness.model.last_sound_path.len);
+
+    harness.send(.{ .sound_tick = .{ .key = 3, .outcome = .fired } });
+    try testing.expect(harness.model.last_sound_path.len > 0);
+}
+
+test "a sound due after its screen ended never plays" {
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.model.selected = souls.indexOfKey("tool_failed").?;
+    harness.send(.preview);
+    harness.model.overlay.started_ms -= @intCast(harness.model.overlay.duration_ms + 50);
+    harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .fired } });
+    try testing.expect(!harness.model.overlay.active);
+
+    harness.send(.{ .sound_tick = .{ .key = 3, .outcome = .fired } });
+    try testing.expectEqual(@as(usize, 0), harness.model.last_sound_path.len);
+}
+
+test "a screen frozen past its fade-out still fades out" {
+    // The regression: starting a sound freezes the Win32 loop for two
+    // seconds, and the screen came back from the freeze already over.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.model.selected = souls.indexOfKey("tool_failed").?;
+    harness.send(.preview);
+    const duration = harness.model.overlay.duration_ms;
+
+    // Two seconds pass with the loop dead: no advance happened, so both
+    // clocks are simply that much older than they should be.
+    harness.model.overlay.started_ms -= 2035;
+    harness.model.overlay.last_advance_ms -= 2035;
+    harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .fired } });
+
+    // Still up, and parked at the top of the fall rather than past it.
+    try testing.expect(harness.model.overlay.active);
+    try testing.expect(harness.model.overlay.elapsed_ms <= duration - 600);
+    try testing.expectApproxEqAbs(@as(f32, 1), harness.model.overlay.opacity(), 0.05);
+}
+
+test "an audio event with no screen up is harmless" {
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.send(.{ .audio_event = .{ .key = 30, .kind = .completed } });
+    try testing.expect(!harness.model.overlay.active);
+}
+
 test "a rejected timer fire changes nothing" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
