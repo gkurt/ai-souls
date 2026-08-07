@@ -56,6 +56,9 @@ pub const Subtitle = Text(max_subtitle_bytes);
 pub const min_duration_ms: u32 = 600;
 pub const max_duration_ms: u32 = 10_000;
 
+/// Starting playback level, 0..100.
+pub const default_volume: u8 = 20;
+
 pub const EventSettings = struct {
     enabled: bool,
     style: souls.Style,
@@ -72,7 +75,11 @@ pub const EventSettings = struct {
             .enabled = event.default_enabled,
             .style = event.default_style,
             .sound = event.default_sound,
-            .volume = 70,
+            // Quiet by default. These fire unprompted, several times a
+            // session, while someone is concentrating — the first one
+            // has to be an accent, not a jump scare. The slider goes to
+            // 100 for anyone who wants the gong.
+            .volume = default_volume,
             .duration_ms = 2600,
             .title = Title.from(event.default_title),
             .subtitle = Subtitle.from(event.default_subtitle),
@@ -229,6 +236,13 @@ test "unknown keys and junk lines leave the defaults standing" {
         souls.events[1].default_title,
         parsed.events[1].title.slice(),
     );
+}
+
+test "a fresh install starts quiet" {
+    const config = Config.default();
+    for (config.events) |entry| {
+        try std.testing.expectEqual(default_volume, entry.volume);
+    }
 }
 
 test "a title with no subtitle separator still parses" {

@@ -1,9 +1,24 @@
-# Claude Souls
+# AI Souls
 
-Dark Souls screens for Claude Code. A tool call fails and **YOU DIED**
-bleeds across your monitor. A session starts and a bonfire is lit. The
-banner is transparent, always on top, click-through, and gone in a
-couple of seconds — you keep typing straight through it.
+Dark Souls screens for your coding agent. A tool call fails and a
+banner bleeds across your monitor; a session starts and another one
+lights up. It is transparent, always on top, click-through, and gone in
+a couple of seconds — you keep typing straight through it.
+
+Claude Code is the only agent wired up today. That is why the binary,
+the config directory and the installed hooks are all still spelled
+`claude-souls`: they are contracts with an existing install, and only
+the product name has moved.
+
+Out of the box every headline is just the event's own name — "Session
+started", "Tool call failed". **YOU DIED** is a much better joke when
+you chose it, so the settings window lets you write your own. Whatever
+you type is SHOUTED: the uppercasing happens at render time, so the
+setting keeps your text exactly as you wrote it.
+
+It is set in [EB Garamond](https://github.com/octaviopardo/EBGaramond12)
+(SIL Open Font License), embedded in the binary rather than borrowed
+from the OS so the screen is the same face on Windows and macOS.
 
 Built with [Vercel's Native SDK](https://github.com/vercel-labs/native):
 declarative native views in Zig, no browser, no WebView, one binary.
@@ -60,24 +75,38 @@ the app has to stay alive to answer hooks. Quit from the tray menu.
 
 ## The catalog
 
-| Event | Fires on | Default screen |
+| Event | Fires on | |
 | --- | --- | --- |
-| Session started | `SessionStart` | BONFIRE LIT |
-| Turn completed | `Stop` | VICTORY ACHIEVED |
-| Question asked | `Notification` | THE ASHEN ONE BECKONS |
-| Tool call failed | `PostToolUseFailure` | YOU DIED |
-| PR created | `PostToolUse` + `Bash(gh pr create:*)` | SUMMON SIGN CAST |
-| Commit made | `PostToolUse` + `Bash(git commit:*)` | BONFIRE KINDLED |
-| Permission denied | `PermissionDenied` | COVENANT BROKEN *(off)* |
-| Subagent finished | `SubagentStop` | PHANTOM RETURNS *(off)* |
-| Context compacted | `PreCompact` | HOLLOWING *(off)* |
-| Session ended | `SessionEnd` | ASHEN ONE DEPARTS *(off)* |
+| Session started | `SessionStart` | |
+| Turn completed | `Stop` | |
+| Question asked | `Notification` | |
+| Tool call failed | `PostToolUseFailure` | |
+| Rate limited | `StopFailure` + `rate_limit\|overloaded` | |
+| API error | `StopFailure` + auth / billing / server faults | |
+| PR created | `PostToolUse` + `Bash(gh pr create:*)` | |
+| Commit made | `PostToolUse` + `Bash(git commit:*)` | |
+| Permission denied | `PermissionDenied` | *(off)* |
+| Subagent finished | `SubagentStop` | *(off)* |
+| Context compacted | `PreCompact` | *(off)* |
+| Session ended | `SessionEnd` | *(off)* |
+
+The last two are the ones you cannot get any other way: Claude Code's
+`StopFailure` hook fires when a turn ends on an API error, and its
+matcher is the `error_type`, so "you are rate limited" and "something
+is actually broken" can be two different screens.
+
+Everything about the bar is a multiple of the headline size, so it
+keeps its proportions on any display: the bar is 2.5x the type, and the
+top and bottom quarter-of-a-headline of it fade out rather than ending
+on a line.
 
 Per event you can set the headline and subtitle, the colour style
 (death / bonfire / victory / soul / hollow / covenant), the sound,
-the volume, and how long it stays up. Changes save themselves; only
-arming or disarming an event needs **Write hooks** afterwards, because
-that is what changes the hook set on disk.
+the volume, and how long it stays up. Sounds start at 20% — these
+arrive unannounced while you are concentrating, so the first one is an
+accent rather than a jump scare. Changes save themselves; only arming
+or disarming an event needs **Write hooks** afterwards, because that is
+what changes the hook set on disk.
 
 ## About your settings.json
 
@@ -85,7 +114,7 @@ that is what changes the hook set on disk.
 only its own entries. Everything else — other hooks, unrelated settings,
 key order — is carried through untouched, and the original is backed up
 once to `settings.json.claude-souls-backup` before the first write.
-Claude Souls' own entries are recognised by shape (a `command` hook
+Our own entries are recognised by shape (a `command` hook
 running this binary with `fire <event>`), so `uninstall-hooks` never
 touches a hook it did not write. Installing twice is a no-op.
 
@@ -143,8 +172,44 @@ A few things worth knowing:
   lands about 2.5 seconds late — longer than a screen's whole life.
   Paying it once at startup makes every screen instant. The cost is one
   always-present click-through window.
-- **`CLAUDE_SOULS_OPAQUE=1`** runs the overlay as a solid window. Some
-  remote-desktop and compositor setups cannot present a layered window;
-  a solid banner beats an invisible one.
-- On Windows the overlay is a `WS_POPUP` top-level window, so it may
-  show a taskbar button while it is up.
+- **The overlay window is only as tall as the banner**, not as tall as
+  the screen, and this is the entire framerate budget. A transparent
+  top-level window cannot use the Direct2D path — `UpdateLayeredWindow`
+  replaces the whole top-level image and cannot compose child HWNDs —
+  so every frame is rasterized on the CPU and the cost tracks the
+  window's area. Measured on a 4K/150% display:
+
+  | overlay window | animation |
+  | --- | --- |
+  | full screen (1440pt) | 6 fps |
+  | 320pt band | 16 fps |
+  | **240pt band** (shipping) | **21 fps** |
+  | 240pt band, opaque | 28 fps |
+
+  Asking the animation timer for a shorter interval does not help and
+  slightly hurts: effect timers arrive as `WM_TIMER`, the lowest-
+  priority Win32 message, so a busy frame loop starves them regardless.
+  4ms measured 20 fps against 16ms's 21. `timeBeginPeriod(1)` landed
+  inside the noise and was dropped.
+- **`CLAUDE_SOULS_OPAQUE=1`** runs the overlay as a solid window: the
+  band stops being see-through, and in exchange it regains the Direct2D
+  path and runs noticeably smoother. It is also the fallback for
+  remote-desktop and compositor setups that cannot present a layered
+  window at all, where a solid banner beats an invisible one.
+- **Two things about the overlay window are fixed from Win32 directly**
+  (`src/overlay_style.zig`), because the SDK's `WindowDescriptor` cannot
+  express them. It is a borderless top-level window — `WS_POPUP` with no
+  owner — which the shell would otherwise give a taskbar button and an
+  Alt+Tab entry, so `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE` are set on
+  it. And the descriptor's `x`/`y` are never applied: the Win32 host
+  passes `CW_USEDEFAULT` to `CreateWindowExW`, which parks the bar at
+  the top of the screen, so it is moved to the middle afterwards.
+- **`native automate snapshot` is not trustworthy here.** It served a
+  cached snapshot from a long-dead process throughout development —
+  check `publisher_pid` against a live process before believing it.
+- **Screenshotting the overlay needs `CAPTUREBLT`.** It is a layered
+  window, and a plain `BitBlt`/`CopyFromScreen` of the desktop silently
+  omits those — it returns a perfectly good screenshot with no banner in
+  it. Any capture tool must also be per-monitor DPI aware, or Windows
+  virtualizes its coordinates and window rects and the numbers quietly
+  disagree with the app's.

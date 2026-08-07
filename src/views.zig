@@ -24,11 +24,61 @@ fn ink(rgb: [3]u8) canvas.Color {
 
 // ------------------------------------------------------------ overlay
 
-/// The band behind the headline. Dark enough to read against a bright
+/// The bar behind the headline. Dark enough to read against a bright
 /// editor, translucent enough that you can still see what you were
 /// doing.
 const band_ink = canvas.Color.rgba8(6, 5, 5, 214);
-const band_edge = canvas.Color.rgba8(0, 0, 0, 0);
+const band_alpha: f32 = 214;
+
+/// How many strips each soft edge is cut into.
+///
+/// Widget backgrounds take a flat `?Color` — there is no gradient fill
+/// at this layer, and the `chrome` builder that does have one is main-
+/// canvas only, so a real vertical gradient is not available to a
+/// declared window. Stacking thin constant-alpha strips gets there:
+/// over a ~26pt edge, 24 of them are about a point each, which is finer
+/// than the eye resolves in a 0.84-alpha wash.
+const fade_steps = 24;
+
+/// Souls screens shout.
+///
+/// Uppercased at RENDER time, not in the catalog, so the setting stays
+/// whatever the user typed — the shout is a property of the screen, and
+/// they get their text back verbatim if they ever want it elsewhere.
+/// ASCII-only, so any UTF-8 sequence passes through untouched instead
+/// of being mangled a byte at a time.
+fn shout(ui: *Ui, text: []const u8) []const u8 {
+    var buffer: [souls.max_title_bytes]u8 = undefined;
+    const n = @min(text.len, buffer.len);
+    for (text[0..n], 0..) |byte, index| buffer[index] = std.ascii.toUpper(byte);
+    return ui.fmt("{s}", .{buffer[0..n]});
+}
+
+/// One end of the bar, dissolving over `steps` strips. `descending`
+/// runs the ramp the other way for the bottom edge.
+fn softEdge(ui: *Ui, out: []Node, edge: f32, descending: bool) Node {
+    const steps: f32 = @floatFromInt(out.len);
+    for (out, 0..) |*slot, index| {
+        const step: f32 = @floatFromInt(index);
+        // Sample at the strip's middle, and ease rather than ramp
+        // linearly: a straight ramp still shows its two ends as creases.
+        const t = (step + 0.5) / steps;
+        const eased = smoothstep(if (descending) 1 - t else t);
+        slot.* = ui.el(.panel, .{
+            .height = edge / steps,
+            .style = .{
+                .background = canvas.Color.rgba8(6, 5, 5, @intFromFloat(@round(band_alpha * eased))),
+                .radius = 0,
+            },
+        }, .{});
+    }
+    return ui.column(.{ .height = edge }, .{out});
+}
+
+fn smoothstep(t: f32) f32 {
+    const x = std.math.clamp(t, 0, 1);
+    return x * x * (3 - 2 * x);
+}
 
 pub fn overlayView(ui: *Ui, model: *const Model) Node {
     const overlay = &model.overlay;
@@ -39,14 +89,14 @@ pub fn overlayView(ui: *Ui, model: *const Model) Node {
     const entry = &model.config.events[overlay.event_index];
     const opacity = overlay.opacity();
     const drift = overlay.driftY();
-    const band_height = @max(150, @min(320, model.screen_height * 0.26));
+    const edge = app.bandSoftEdge(model.screen_width, model.screen_height);
 
     const headline = ui.text(.{
         .size = .display,
         .text_alignment = .center,
         .style = .{ .foreground = ink(entry.style.ink()) },
         .transform = canvas.Affine.translate(0, drift),
-    }, entry.title.slice());
+    }, shout(ui, entry.title.slice()));
 
     const caption = if (entry.subtitle.len == 0)
         ui.spacer(0)
@@ -57,38 +107,23 @@ pub fn overlayView(ui: *Ui, model: *const Model) Node {
             .transform = canvas.Affine.translate(0, drift * 0.5),
         }, entry.subtitle.slice());
 
-    // Hairlines above and below the band: the Souls screens are framed,
-    // not just tinted.
-    const rule_color = canvas.Color.rgba8(
-        entry.style.ink()[0],
-        entry.style.ink()[1],
-        entry.style.ink()[2],
-        90,
-    );
+    var top_strips: [fade_steps]Node = undefined;
+    var bottom_strips: [fade_steps]Node = undefined;
 
-    const band = ui.column(.{
-        .height = band_height,
-        .main = .center,
-        .cross = .center,
-        .gap = 10,
-        .padding = 24,
-        .opacity = opacity,
-        .style = .{ .background = band_ink, .radius = 0 },
-    }, .{
-        ui.el(.separator, .{ .style = .{ .background = rule_color } }, .{}),
-        ui.spacer(1),
-        headline,
-        caption,
-        ui.spacer(1),
-        ui.el(.separator, .{ .style = .{ .background = rule_color } }, .{}),
+    // The window IS the bar (see `app.bandHeight`): the solid core grows
+    // into whatever the two soft edges leave, and the type centres in
+    // the core, which is centred in the bar because the edges match.
+    return ui.column(.{ .grow = 1, .opacity = opacity }, .{
+        softEdge(ui, top_strips[0..], edge, false),
+        ui.column(.{
+            .grow = 1,
+            .main = .center,
+            .cross = .center,
+            .gap = 10,
+            .style = .{ .background = band_ink, .radius = 0 },
+        }, .{ headline, caption }),
+        softEdge(ui, bottom_strips[0..], edge, true),
     });
-
-    return ui.column(.{
-        .grow = 1,
-        .main = .center,
-        .cross = .stretch,
-        .style = .{ .background = band_edge },
-    }, .{band});
 }
 
 // ----------------------------------------------------------- settings
@@ -109,7 +144,10 @@ pub fn settingsView(ui: *Ui, model: *const Model) Node {
 
 fn header(ui: *Ui, model: *const Model) Node {
     return ui.row(.{ .padding = 16, .gap = 12, .cross = .center }, .{
-        ui.text(.{ .size = .heading }, "Claude Souls"),
+        ui.text(.{ .size = .heading }, "AI Souls"),
+        // Claude Code is the only agent wired up so far; naming it here
+        // is the honest version of a product name that does not.
+        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Claude Code"),
         ui.spacer(1),
         ui.el(.badge, .{
             .text = ui.fmt("{d} of {d} armed", .{ model.enabledCount(), souls.event_count }),
@@ -158,11 +196,14 @@ fn detailPane(ui: *Ui, model: *const Model) Node {
                     .style_tokens = .{ .foreground = .text_muted },
                 }, event.blurb),
                 ui.text(.{
+                    .wrap = true,
                     .style_tokens = .{ .foreground = .text_muted },
                 }, ui.fmt("hook: {s}{s}{s}", .{
                     event.hook_event,
                     if (event.matcher.len > 0) " · matcher " else "",
-                    event.matcher,
+                    // `api_error`'s real matcher is an eight-way
+                    // alternation; nobody needs to read that here.
+                    if (event.matcher_label.len > 0) event.matcher_label else event.matcher,
                 })),
             }),
 
@@ -183,7 +224,10 @@ fn detailPane(ui: *Ui, model: *const Model) Node {
             fieldLabel(ui, "Headline"),
             ui.textField(.{
                 .text = entry.title.slice(),
-                .placeholder = "YOU DIED",
+                // The shipped headline is the event's own name; the
+                // placeholder says so rather than inventing a third
+                // string to explain it.
+                .placeholder = event.default_title,
                 .on_input = Ui.inputMsg(.title_edit),
                 .semantics = .{ .label = "Headline" },
             }),

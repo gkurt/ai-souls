@@ -76,9 +76,24 @@ pub const Paths = struct {
 
     /// Resolve a bundle-relative asset ("assets/sounds/gong.mp3") into
     /// the absolute path the audio player should try first.
+    ///
+    /// Returns the relative path unchanged when no root was found. That
+    /// is a last resort, not a mode: it only resolves if the process
+    /// happens to have been started from the right directory, which is
+    /// exactly the accident this is meant to stop relying on.
     pub fn asset(self: *const Paths, buffer: []u8, relative: []const u8) []const u8 {
         if (self.assets_root.isEmpty()) return relative;
-        return join(buffer, self.assets_root.slice(), relative);
+        const joined = join(buffer, self.assets_root.slice(), relative);
+        // The catalog spells its paths with forward slashes and the
+        // root came from Win32, so the join can produce a mixed path.
+        // Media Foundation's source resolver treats its argument as a
+        // URL first, and a stray '/' is where that goes wrong.
+        if (@import("builtin").os.tag == .windows) {
+            for (buffer[0..joined.len]) |*byte| {
+                if (byte.* == '/') byte.* = '\\';
+            }
+        }
+        return joined;
     }
 };
 
@@ -147,6 +162,34 @@ test "resolve builds every path from a home directory" {
     try std.testing.expect(std.mem.startsWith(u8, paths.app_dir.slice(), home));
     // ".claude-souls" and ".claude" are different directories.
     try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), ".claude-souls") == null);
+}
+
+test "a resolved asset is absolute and single-separator" {
+    var paths: Paths = .{};
+    const root = if (@import("builtin").os.tag == .windows)
+        "C:\\Program Files\\AI Souls"
+    else
+        "/opt/ai-souls";
+    paths.assets_root.set(root);
+
+    var buffer: [max_path_bytes]u8 = undefined;
+    const resolved = paths.asset(&buffer, "assets/sounds/gong.mp3");
+
+    try std.testing.expect(std.mem.startsWith(u8, resolved, root));
+    try std.testing.expect(std.mem.endsWith(u8, resolved, "gong.mp3"));
+    if (@import("builtin").os.tag == .windows) {
+        // The mixed-separator path is what Media Foundation refuses.
+        try std.testing.expect(std.mem.indexOfScalar(u8, resolved, '/') == null);
+    }
+}
+
+test "with no assets root the relative path survives untouched" {
+    const paths: Paths = .{};
+    var buffer: [max_path_bytes]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "assets/sounds/gong.mp3",
+        paths.asset(&buffer, "assets/sounds/gong.mp3"),
+    );
 }
 
 test "parent trims the last segment" {

@@ -155,7 +155,15 @@ fn status(io: std.Io, paths: *const paths_mod.Paths) Outcome {
     say(io, "executable      {s}\n", .{paths.exe.slice()});
     say(io, "config          {s}\n", .{paths.config.slice()});
     say(io, "trigger         {s}\n", .{paths.trigger.slice()});
-    say(io, "claude settings {s}\n\n", .{paths.claude_settings.slice()});
+    say(io, "claude settings {s}\n", .{paths.claude_settings.slice()});
+    // Where the sounds resolve from is the first thing to check when
+    // they do not play, so it is the first thing `status` says.
+    if (paths.assets_root.isEmpty()) {
+        say(io, "sounds          NOT FOUND — no assets/ near {s}\n\n", .{paths.exe.slice()});
+    } else {
+        var buffer: [paths_mod.max_path_bytes]u8 = undefined;
+        say(io, "sounds          {s}\n\n", .{paths.asset(&buffer, souls.Sound.gong.path())});
+    }
     for (souls.events, 0..) |event, index| {
         const entry = &config.events[index];
         say(io, "{s:<3} {s:<18} {s:<24} {s}\n", .{
@@ -176,12 +184,12 @@ fn listEvents(io: std.Io) Outcome {
 fn printUsage(io: std.Io) void {
     say(
         io,
-        \\claude-souls — Dark Souls screens for Claude Code
+        \\AI Souls — Dark Souls screens for your coding agent
         \\
         \\  claude-souls                  open the settings window
         \\  claude-souls fire <event>     show a screen (this is what hooks run)
         \\  claude-souls install-hooks    write the enabled hooks into ~/.claude/settings.json
-        \\  claude-souls uninstall-hooks  remove every Claude Souls hook
+        \\  claude-souls uninstall-hooks  remove every AI Souls hook
         \\  claude-souls status           show paths and the current per-event settings
         \\  claude-souls events           list the event keys
         \\

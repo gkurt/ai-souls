@@ -1,0 +1,175 @@
+//! The two things about the overlay window that the SDK's descriptor
+//! cannot say. This is the only place in the app that touches an HWND,
+//! and it is entirely best-effort: every failure path just leaves the
+//! window as the SDK made it.
+//!
+//! **It must not appear in the taskbar or Alt+Tab.** The overlay is a
+//! borderless top-level window, which on Win32 means `WS_POPUP` with no
+//! owner — and the shell gives one of those a taskbar button and an
+//! Alt+Tab entry like any other app. For a banner that exists to flash
+//! past and be ignored, both are wrong. The cure is `WS_EX_TOOLWINDOW`,
+//! which `WindowDescriptor` does not expose.
+//!
+//! **It must be vertically centred.** `WindowDescriptor` has `x` and
+//! `y`, but the Win32 host passes `CW_USEDEFAULT` for both to
+//! `CreateWindowExW` and never applies them, so every window it makes
+//! lands wherever the shell puts it — for a `WS_POPUP`, the top-left
+//! corner. The bar has to be moved after the fact or it sits across the
+//! top of the screen instead of through the middle.
+//!
+//! Why a thread: the window does not exist until the runtime creates
+//! it, which happens inside `runner.runWithOptions`, and there is no
+//! window-created hook to hang this off. So one detached thread waits
+//! for the window to appear and retires the moment it has fixed it.
+//! It polls fast enough to win the race against the host's first
+//! reveal, and handles the case where it does not.
+//!
+//! macOS needs none of this: `activate_on_show = false` on a
+//! `NSFloatingWindow` is already invisible to Mission Control and the
+//! app switcher.
+
+const std = @import("std");
+const builtin = @import("builtin");
+
+const win = struct {
+    const HWND = ?*anyopaque;
+    const BOOL = i32;
+
+    const Rect = extern struct { left: i32, top: i32, right: i32, bottom: i32 };
+
+    const sm_cxscreen: i32 = 0;
+    const sm_cyscreen: i32 = 1;
+    const hwnd_topmost: HWND = @ptrFromInt(std.math.maxInt(usize));
+    const swp_noactivate: u32 = 0x0010;
+    const swp_noownerzorder: u32 = 0x0200;
+
+    const gwl_exstyle: i32 = -20;
+    const ws_ex_toolwindow: usize = 0x0000_0080;
+    const ws_ex_appwindow: usize = 0x0004_0000;
+    const ws_ex_noactivate: usize = 0x0800_0000;
+    const sw_hide: i32 = 0;
+    const sw_shownoactivate: i32 = 4;
+
+    extern "user32" fn FindWindowExW(parent: HWND, after: HWND, class: ?[*:0]const u16, title: ?[*:0]const u16) callconv(.winapi) HWND;
+    extern "user32" fn GetWindowThreadProcessId(hwnd: HWND, pid: *u32) callconv(.winapi) u32;
+    extern "user32" fn GetWindowLongPtrW(hwnd: HWND, index: i32) callconv(.winapi) usize;
+    extern "user32" fn SetWindowLongPtrW(hwnd: HWND, index: i32, value: usize) callconv(.winapi) usize;
+    extern "user32" fn IsWindowVisible(hwnd: HWND) callconv(.winapi) BOOL;
+    extern "user32" fn ShowWindow(hwnd: HWND, command: i32) callconv(.winapi) BOOL;
+    extern "user32" fn GetWindowRect(hwnd: HWND, rect: *Rect) callconv(.winapi) BOOL;
+    extern "user32" fn GetSystemMetrics(index: i32) callconv(.winapi) i32;
+    extern "user32" fn SetWindowPos(hwnd: HWND, after: HWND, x: i32, y: i32, cx: i32, cy: i32, flags: u32) callconv(.winapi) BOOL;
+    extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+    // Zig 0.16 moved sleeping onto the `Io` interface, which this
+    // thread has no business holding. Win32 has the primitive.
+    extern "kernel32" fn Sleep(milliseconds: u32) callconv(.winapi) void;
+};
+
+/// How long to keep looking before giving up. The window is created
+/// during startup, so this only ever runs out if something went wrong.
+const attempts = 400;
+const poll_interval_ms = 25;
+
+/// Start watching for the overlay window. Returns immediately.
+///
+/// `title` must be the overlay's window title and must be unique to it
+/// — this is how the window is found, so the overlay does not share the
+/// settings window's title.
+pub fn adopt(title: [:0]const u16) void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const thread = std.Thread.spawn(.{}, watch, .{title}) catch return;
+            thread.detach();
+        },
+        else => {},
+    }
+}
+
+fn watch(title: [:0]const u16) void {
+    var remaining: usize = attempts;
+    while (remaining > 0) : (remaining -= 1) {
+        if (findOwnWindow(title)) |hwnd| {
+            apply(hwnd);
+            centre(hwnd);
+            return;
+        }
+        win.Sleep(poll_interval_ms);
+    }
+}
+
+/// The first top-level window with this title belonging to THIS
+/// process. The pid check matters: a second copy of the app, or a
+/// leftover from a previous run, would otherwise be restyled instead.
+fn findOwnWindow(title: [:0]const u16) win.HWND {
+    const own_pid = win.GetCurrentProcessId();
+    var hwnd: win.HWND = win.FindWindowExW(null, null, null, title.ptr);
+    while (hwnd != null) {
+        var pid: u32 = 0;
+        _ = win.GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == own_pid) return hwnd;
+        hwnd = win.FindWindowExW(null, hwnd, null, title.ptr);
+    }
+    return null;
+}
+
+fn apply(hwnd: win.HWND) void {
+    const current = win.GetWindowLongPtrW(hwnd, win.gwl_exstyle);
+    if (current & win.ws_ex_toolwindow != 0) return;
+
+    // `WS_EX_NOACTIVATE` keeps the banner out of Alt+Tab as well, and
+    // stops it taking focus from the editor being typed into;
+    // `WS_EX_APPWINDOW` is cleared because it would force the taskbar
+    // button back on.
+    const wanted = (current | win.ws_ex_toolwindow | win.ws_ex_noactivate) & ~win.ws_ex_appwindow;
+
+    // The shell reads these bits when a window is shown. Usually this
+    // wins the race and the window has never been shown, so nothing
+    // flickers; if it did not, the hide/show is what makes the taskbar
+    // let go.
+    const was_visible = win.IsWindowVisible(hwnd) != 0;
+    if (was_visible) _ = win.ShowWindow(hwnd, win.sw_hide);
+    _ = win.SetWindowLongPtrW(hwnd, win.gwl_exstyle, wanted);
+    if (was_visible) _ = win.ShowWindow(hwnd, win.sw_shownoactivate);
+}
+
+/// Span the display and sit the bar through the middle of it.
+///
+/// Everything here is in PHYSICAL pixels, which is what these APIs
+/// speak in a per-monitor-DPI-aware process — the SDK's manifest
+/// declares that awareness, so no scaling belongs in this function. The
+/// height is whatever the host already made the window (it DOES apply
+/// the descriptor's size, just not its position), so the one number
+/// this file does not get to invent is the one `app.bandHeight` owns.
+fn centre(hwnd: win.HWND) void {
+    var rect: win.Rect = undefined;
+    if (win.GetWindowRect(hwnd, &rect) == 0) return;
+    const height = rect.bottom - rect.top;
+    if (height <= 0) return;
+
+    const screen_width = win.GetSystemMetrics(win.sm_cxscreen);
+    const screen_height = win.GetSystemMetrics(win.sm_cyscreen);
+    if (screen_width <= 0 or screen_height <= 0) return;
+
+    _ = win.SetWindowPos(
+        hwnd,
+        // Re-assert topmost while moving: a plain move can drop a
+        // window out of the topmost band on some shells.
+        win.hwnd_topmost,
+        0,
+        @divTrunc(screen_height - height, 2),
+        screen_width,
+        height,
+        win.swp_noactivate | win.swp_noownerzorder,
+    );
+}
+
+test "the wanted style adds tool-window and drops app-window" {
+    // Pure bit arithmetic, so it is checkable on every host.
+    const before = win.ws_ex_appwindow | 0x0000_0008;
+    const after = (before | win.ws_ex_toolwindow | win.ws_ex_noactivate) & ~win.ws_ex_appwindow;
+    try std.testing.expect(after & win.ws_ex_toolwindow != 0);
+    try std.testing.expect(after & win.ws_ex_noactivate != 0);
+    try std.testing.expect(after & win.ws_ex_appwindow == 0);
+    // Unrelated bits the SDK set (layered, topmost, transparent) survive.
+    try std.testing.expect(after & 0x0000_0008 != 0);
+}

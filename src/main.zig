@@ -1,4 +1,9 @@
-//! Claude Souls — Dark Souls screens for Claude Code.
+//! AI Souls — Dark Souls screens for your coding agent.
+//!
+//! Claude Code is the only agent wired up today, which is why the
+//! binary, the config directory and the hook identity are all still
+//! spelled `claude-souls`. Those are on-disk contracts with an existing
+//! install; the product name is not.
 //!
 //! One binary, three jobs (see `cli.zig`). This file is the app: it
 //! resolves the paths and the display size that `update` is not allowed
@@ -17,6 +22,7 @@ const platform = native_sdk.platform;
 
 const app = @import("app.zig");
 const cli = @import("cli.zig");
+const overlay_style = @import("overlay_style.zig");
 const paths_mod = @import("paths.zig");
 const screen = @import("screen.zig");
 const souls = @import("souls.zig");
@@ -32,9 +38,41 @@ pub const AppUi = views.Ui;
 
 const SoulsApp = native_sdk.UiApp(Model, Msg);
 
+/// The on-disk identity: the binary's name, the tray/bundle key, and
+/// the prefix `hooks.zig` recognises its own entries by. Renaming the
+/// product does not get to move these.
 const app_name = "claude-souls";
-const display_name = "Claude Souls";
 const bundle_id = "dev.native_sdk.claude-souls";
+
+/// What a person sees.
+const display_name = "AI Souls";
+
+/// The overlay's window title. Never drawn — the window is chromeless
+/// and, after `overlay_style`, absent from the taskbar and Alt+Tab. It
+/// exists to be DISTINCT from the settings window's title, because that
+/// is how `overlay_style` finds the right HWND.
+const overlay_window_title = "AI Souls Overlay";
+const overlay_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(overlay_window_title);
+
+// ---------------------------------------------------------------- type
+//
+// EB Garamond, bundled rather than borrowed from the OS: a system serif
+// would be a different face on macOS, and the whole point of the screen
+// is that it looks the same everywhere. SIL Open Font License; the
+// licence ships next to the file.
+//
+// It lives under `src/` rather than in `assets/` because `@embedFile`
+// cannot reach outside the module root — and because that is the true
+// distinction here: the sounds are loaded from disk at runtime, this is
+// compiled into the binary.
+const serif_ttf = @embedFile("fonts/EBGaramond-Regular.ttf");
+const serif_font_id: canvas.FontId = canvas.min_registered_font_id;
+
+const app_fonts = [_]SoulsApp.FontRegistration{.{
+    .id = serif_font_id,
+    .name = "EBGaramond-Regular.ttf",
+    .ttf = serif_ttf,
+}};
 
 const settings_width: f32 = 900;
 const settings_height: f32 = 640;
@@ -49,7 +87,7 @@ const shell_views = [_]native_sdk.ShellView{.{
     .kind = .gpu_surface,
     .fill = true,
     .role = "Settings canvas",
-    .accessibility_label = "Claude Souls settings",
+    .accessibility_label = "AI Souls settings",
     .gpu_pixel_format = .bgra8_unorm,
     .gpu_present_mode = .timer,
     .gpu_alpha_mode = .@"opaque",
@@ -97,9 +135,15 @@ fn tokens(model: *const Model) canvas.DesignTokens {
     design.colors.focus_ring = canvas.Color.rgb8(0xC9, 0xA2, 0x27);
     design.colors.destructive = canvas.Color.rgb8(0x8B, 0x14, 0x14);
 
-    // Only the overlay uses the display rung, so it can be sized for a
-    // full-width banner. Scale with the screen, then keep it sane.
-    design.typography.display_size = std.math.clamp(model.screen_width * 0.055, 40, 104);
+    // App-wide, because the SDK resolves faces from tokens and tokens
+    // are per-model, not per-window: there is no way to serif only the
+    // overlay. Which is fine — a Souls app in Geist would be the odd
+    // one out, not the settings pane in Garamond.
+    design.typography.font_id = serif_font_id;
+
+    // Only the overlay uses the display rung, and the whole banner is
+    // measured off it (see `app.bandHeight`).
+    design.typography.display_size = app.headlineSize(model.screen_width);
 
     return design;
 }
@@ -120,6 +164,12 @@ fn tokens(model: *const Model) canvas.DesignTokens {
 ///
 /// An idle overlay is a fully transparent, click-through, borderless
 /// window that paints nothing, so nothing about it is observable.
+///
+/// It is also only as tall as the banner, not as tall as the display —
+/// see `app.bandHeight`, where that turns out to be the whole framerate
+/// budget. The geometry is a pure function of the display size, fixed
+/// for the life of the app, so nothing here ever moves the window and
+/// re-triggers the reveal cost.
 fn declaredWindows(
     model: *const Model,
     scratch: *SoulsApp.WindowsScratch,
@@ -127,11 +177,14 @@ fn declaredWindows(
     scratch.windows[0] = .{
         .label = app.overlay_window_label,
         .canvas_label = app.overlay_canvas_label,
-        .title = display_name,
+        .title = overlay_window_title,
+        // Declared for the platforms that honour it. The Win32 host
+        // passes CW_USEDEFAULT to CreateWindowExW and drops these on
+        // the floor, so `overlay_style` re-centres the window there.
         .x = 0,
-        .y = 0,
+        .y = app.bandTop(model.screen_width, model.screen_height),
         .width = model.screen_width,
-        .height = model.screen_height,
+        .height = app.bandHeight(model.screen_width, model.screen_height),
         .resizable = false,
         // No caption, no frame — Windows also requires a chromeless
         // style before it will accept a transparent surface.
@@ -163,7 +216,7 @@ fn statusItem(
     model: *const Model,
     scratch: *SoulsApp.StatusItemScratch,
 ) SoulsApp.StatusItemState {
-    scratch.items[0] = .{ .id = 1, .label = "Open Claude Souls", .command = tray_open_command };
+    scratch.items[0] = .{ .id = 1, .label = "Open AI Souls", .command = tray_open_command };
     scratch.items[1] = .{ .id = 2, .label = "Quit", .command = tray_quit_command };
     const title = std.fmt.bufPrint(
         &scratch.title_buffer,
@@ -210,10 +263,16 @@ pub fn main(init: std.process.Init) !void {
         .run_app => {},
     }
 
+    // The overlay window does not exist yet — this waits for it, then
+    // fixes the two things the descriptor cannot express. See
+    // `overlay_style` for why neither can be done declaratively.
+    overlay_style.adopt(overlay_window_title_w);
+
     const app_state = try SoulsApp.create(std.heap.page_allocator, .{
         .name = app_name,
         .scene = shell_scene,
         .canvas_label = app.canvas_label,
+        .fonts = &app_fonts,
         .tokens_fn = tokens,
         .view = views.settingsView,
         .window_view = windowView,
@@ -245,26 +304,57 @@ pub fn main(init: std.process.Init) !void {
     }, init);
 }
 
-/// A dev run finds `assets/` in the working directory; a packaged
-/// Windows or Linux build finds it next to the executable. macOS
-/// resolves bundle-relative audio paths itself, so leaving the root
-/// empty is right there too.
+/// Find the directory `assets/sounds/*.mp3` actually lives in, and pin
+/// it as an ABSOLUTE path.
+///
+/// This has to be absolute. The fallback is the manifest-relative
+/// `assets/sounds/gong.mp3`, which every platform audio backend
+/// resolves against the process working directory — so the sounds work
+/// when the binary is launched from the project root and fail with
+/// "that sound could not be played" from anywhere else, including from
+/// a shortcut, from Explorer, and from a hook-spawned parent.
+///
+/// Everything probed here is derived from the executable's own path, so
+/// the answer does not depend on where the app was started from:
+///
+///   - `<exe dir>`                  a packaged Windows or Linux build
+///   - `<exe dir>/../Resources`     inside a macOS .app bundle
+///   - `<exe dir>/..`, `../..`      `zig-out/bin` back up to the source
+///                                  tree, which is what `native build`
+///                                  leaves behind
 fn resolveAssetsRoot(io: std.Io, paths: *paths_mod.Paths) void {
     const exe_dir = paths_mod.parent(paths.exe.slice());
     if (exe_dir.len == 0) return;
 
-    var buffer: [paths_mod.max_path_bytes]u8 = undefined;
-    const probe = paths_mod.join(&buffer, exe_dir, souls.Sound.gong.path());
+    const up_one = paths_mod.parent(exe_dir);
+    const up_two = paths_mod.parent(up_one);
+
+    var resources_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const resources = if (up_one.len > 0)
+        paths_mod.join(&resources_buffer, up_one, "Resources")
+    else
+        "";
+
+    const candidates = [_][]const u8{ exe_dir, resources, up_one, up_two };
+
     const cwd = std.Io.Dir.cwd();
-    if (cwd.access(io, probe, .{})) |_| {
-        paths.assets_root.set(exe_dir);
-    } else |_| {}
+    var probe_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    for (candidates) |root| {
+        if (root.len == 0) continue;
+        // `gong.mp3` stands in for the whole bank: they ship together.
+        const probe = paths_mod.join(&probe_buffer, root, souls.Sound.gong.path());
+        if (cwd.access(io, probe, .{})) |_| {
+            paths.assets_root.set(root);
+            return;
+        } else |_| {}
+    }
 }
 
 test {
     _ = @import("app.zig");
     _ = @import("cli.zig");
     _ = @import("config.zig");
+    _ = @import("overlay_style.zig");
     _ = @import("hooks.zig");
     _ = @import("paths.zig");
     _ = @import("screen.zig");

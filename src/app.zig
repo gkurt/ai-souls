@@ -1,4 +1,4 @@
-//! Model, Msg, and update — the whole of Claude Souls' behaviour.
+//! Model, Msg, and update — the whole of AI Souls' behaviour.
 //!
 //! Two windows come out of one model. The settings window is the app's
 //! shell window and is always declared. The overlay is model-declared:
@@ -33,7 +33,21 @@ const key_audio: u64 = 30;
 /// How often the app looks at the trigger file. Fast enough that a
 /// screen feels like a reaction, slow enough to be free.
 const poll_interval_ms: u64 = 200;
-/// Overlay animation cadence.
+/// Overlay animation cadence: one tick per 60 Hz frame.
+///
+/// Asking for LESS does not buy more frames, and measurably costs some.
+/// Effect timers land as `WM_TIMER`, the lowest-priority Win32 message,
+/// so while the overlay is animating the frame loop starves them well
+/// below whatever was requested — the SDK's own Win32 host says as much
+/// where it deliberately uses posted messages instead. Measured on a
+/// 4K/150% display, three runs each:
+///
+///     interval   4 ms  ->  20 fps      (plus flooding the queue)
+///     interval  16 ms  ->  21 fps
+///
+/// `timeBeginPeriod(1)` was tried too and sat inside the same noise, so
+/// it is not worth the battery on an app that lives in the tray. The
+/// real lever is how much the frame loop has to do — see `bandHeight`.
 const anim_interval_ms: u64 = 16;
 
 const fade_in_ms: u32 = 320;
@@ -81,6 +95,55 @@ fn smoothstep(t: f32) f32 {
     return x * x * (3 - 2 * x);
 }
 
+/// Headline point size. Every other measurement of the screen is a
+/// multiple of this one, so the banner keeps its proportions on any
+/// display instead of being a pile of independent magic numbers.
+pub fn headlineSize(screen_width: f32) f32 {
+    return std.math.clamp(screen_width * 0.055, 40, 104);
+}
+
+/// How tall the bar is — and therefore how tall the overlay WINDOW is,
+/// because the two are the same thing.
+///
+/// 2.5x the headline: enough to sit the type in air rather than in a
+/// box. The window matching the bar is also the whole framerate story
+/// on Windows. A transparent top-level window cannot take the Direct2D
+/// packet path — the host refuses it outright, because
+/// `UpdateLayeredWindow` replaces the entire top-level image and cannot
+/// compose child HWNDs. Every frame is rasterized on the CPU instead,
+/// and the cost tracks the window's AREA. Measured on a 4K/150%
+/// display, three runs each:
+///
+///     full screen (1440pt)  ->   6 fps
+///     320pt band            ->  16 fps
+///     260pt band (2.5x)     ->  20 fps
+///
+/// (An opaque band of the same size measures 28, because it regains the
+/// Direct2D path — that is what `CLAUDE_SOULS_OPAQUE=1` buys, at the
+/// cost of the bar no longer being see-through.)
+///
+/// The height guard is for the freak case of a very wide, very short
+/// display, where 2.5x a width-derived headline could otherwise ask for
+/// more rows than exist.
+pub fn bandHeight(screen_width: f32, screen_height: f32) f32 {
+    return @min(headlineSize(screen_width) * 2.5, screen_height * 0.6);
+}
+
+/// How far the bar fades at each end: a quarter of the headline, which
+/// on an unguarded bar is exactly a tenth of its height. Taken off the
+/// bar rather than off the headline so the proportion survives the
+/// short-display guard above.
+///
+/// The bar has to stop without drawing a line across the screen.
+pub fn bandSoftEdge(screen_width: f32, screen_height: f32) f32 {
+    return bandHeight(screen_width, screen_height) * 0.1;
+}
+
+/// Top edge of that window: vertically centred on the display.
+pub fn bandTop(screen_width: f32, screen_height: f32) f32 {
+    return @round((screen_height - bandHeight(screen_width, screen_height)) / 2);
+}
+
 pub const Field = enum { title, subtitle };
 
 pub const Model = struct {
@@ -113,6 +176,11 @@ pub const Model = struct {
     /// Primary display size in logical points, measured in `main`.
     screen_width: f32 = 1440,
     screen_height: f32 = 900,
+
+    /// The file the last `playAudio` was pointed at. Kept only so a
+    /// failure can name it: "that sound could not be played" is a dead
+    /// end, and the answer is almost always that the path is wrong.
+    last_sound_path: paths_mod.PathText = .{},
 
     /// Per-pixel window transparency, so the screen floats over the
     /// desktop instead of blanking it. Set from
@@ -348,7 +416,13 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         },
         .audio_event => |event| {
             if (event.kind == .failed or event.kind == .rejected) {
-                model.status.set("That sound could not be played.");
+                var buffer: [status_capacity]u8 = undefined;
+                const text = std.fmt.bufPrint(
+                    &buffer,
+                    "Could not play {s}",
+                    .{model.last_sound_path.slice()},
+                ) catch "That sound could not be played.";
+                model.status.set(text);
             }
         },
 
@@ -433,6 +507,7 @@ fn playSound(model: *Model, fx: *Effects, sound: souls.Sound, volume: u8) void {
     }
     var buffer: [paths_mod.max_path_bytes]u8 = undefined;
     const path = model.paths.asset(&buffer, sound.path());
+    model.last_sound_path.set(path);
     fx.setAudioVolume(@as(f32, @floatFromInt(volume)) / 100.0);
     fx.playAudio(.{
         .key = key_audio,
@@ -499,6 +574,58 @@ test "an inactive overlay paints nothing" {
     const overlay: Overlay = .{ .active = false, .elapsed_ms = 100, .duration_ms = 2600 };
     try testing.expectEqual(@as(f32, 0), overlay.opacity());
     try testing.expectEqual(@as(f32, 0), overlay.driftY());
+}
+
+test "the bar is 2.5x the headline and its edges a quarter of it" {
+    // The proportions the design is specified in. Checked against a
+    // width where the headline clamp is not binding, so the ratios are
+    // the thing under test rather than the clamp.
+    const width: f32 = 1600;
+    const headline = headlineSize(width);
+    try testing.expect(headline > 40 and headline < 104);
+
+    const band = bandHeight(width, 1200);
+    try testing.expectApproxEqAbs(headline * 2.5, band, 0.01);
+    try testing.expectApproxEqAbs(headline * 0.25, bandSoftEdge(width, 1200), 0.01);
+}
+
+test "the overlay window is a bar, not a screen" {
+    // The regression this guards is a framerate one: a transparent
+    // window is software-rasterized per frame on Windows, so covering
+    // the display costs several times what the banner does.
+    const width: f32 = 2560;
+    const height: f32 = 1440;
+    const band = bandHeight(width, height);
+    try testing.expect(band < height / 4);
+    // Vertically centred, and fully on screen.
+    const top = bandTop(width, height);
+    try testing.expect(top > 0);
+    try testing.expectApproxEqAbs(height - top - band, top, 1);
+}
+
+test "the bar fits on screen at any display size" {
+    const sizes = [_][2]f32{
+        .{ 1280, 800 },   .{ 1920, 1080 }, .{ 2560, 1440 },
+        .{ 3840, 2160 },  .{ 3440, 1440 }, // ultrawide
+        .{ 5120, 300 },                    // absurd: wide and very short
+        .{ 800, 1280 },                    // portrait
+    };
+    for (sizes) |size| {
+        const width = size[0];
+        const height = size[1];
+        const band = bandHeight(width, height);
+        const edge = bandSoftEdge(width, height);
+        try testing.expect(band > 0);
+        // The two soft edges must never eat the whole bar, or there is
+        // no solid core left to sit the headline on.
+        try testing.expect(edge * 2 < band);
+        const top = bandTop(width, height);
+        try testing.expect(top >= 0);
+        try testing.expect(top + band <= height);
+    }
+    // The short-display guard genuinely binds on that absurd one, so it
+    // is not dead code.
+    try testing.expect(bandHeight(5120, 300) < headlineSize(5120) * 2.5);
 }
 
 test "enabledCount tracks the toggles" {

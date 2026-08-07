@@ -36,7 +36,7 @@ pub const Style = enum(u8) {
     /// over whatever the user is actually looking at.
     pub fn ink(self: Style) [3]u8 {
         return switch (self) {
-            .death => .{ 0x8B, 0x14, 0x14 },
+            .death => .{ 0x82, 0x10, 0x1D },
             .bonfire => .{ 0xE0, 0x8A, 0x3C },
             .victory => .{ 0xC9, 0xA2, 0x27 },
             .soul => .{ 0x8F, 0xB4, 0xD0 },
@@ -105,13 +105,24 @@ pub const Event = struct {
     blurb: []const u8,
     /// The Claude Code hook event this subscribes to.
     hook_event: []const u8,
-    /// Tool matcher for tool-scoped events; "" for events with no
-    /// matcher axis.
+    /// The hook group's `matcher`; "" for events with no matcher axis.
+    /// What it is matched AGAINST depends on the hook event — a tool
+    /// name for the `*ToolUse*` family, an `error_type` for
+    /// `StopFailure` — so a pipe-separated list is legal here.
     matcher: []const u8 = "",
+    /// Short human rendering of `matcher` for the settings pane, for
+    /// the events whose real matcher is a long alternation.
+    matcher_label: []const u8 = "",
     /// Permission-rule narrowing (`"if"`), so "PR created" can mean the
     /// one Bash call that creates a PR rather than every Bash call.
     condition: []const u8 = "",
 
+    /// What the headline says out of the box.
+    ///
+    /// Deliberately just the event's own name. The Souls wording is the
+    /// fun part and it is also personal, so the app ships neutral and
+    /// lets people write their own — "YOU DIED" is a much better joke
+    /// when you chose it.
     default_title: []const u8,
     default_subtitle: []const u8 = "",
     default_style: Style,
@@ -119,13 +130,21 @@ pub const Event = struct {
     default_enabled: bool,
 };
 
+/// The matcher covering every `StopFailure` error type that is not the
+/// API telling us to slow down — auth, billing, a bad request, a server
+/// fault. Listed rather than wildcarded so a new error type Claude Code
+/// invents later does not silently start firing a screen.
+const api_error_types =
+    "authentication_failed|oauth_org_not_allowed|billing_error|" ++
+    "invalid_request|model_not_found|server_error|max_output_tokens|unknown";
+
 pub const events = [_]Event{
     .{
         .key = "session_start",
         .label = "Session started",
         .blurb = "A Claude Code session begins or resumes.",
         .hook_event = "SessionStart",
-        .default_title = "BONFIRE LIT",
+        .default_title = "Session started",
         .default_style = .bonfire,
         .default_sound = .ember,
         .default_enabled = true,
@@ -135,7 +154,7 @@ pub const events = [_]Event{
         .label = "Turn completed",
         .blurb = "Claude finishes responding.",
         .hook_event = "Stop",
-        .default_title = "VICTORY ACHIEVED",
+        .default_title = "Turn completed",
         .default_style = .victory,
         .default_sound = .choir,
         .default_enabled = true,
@@ -145,7 +164,7 @@ pub const events = [_]Event{
         .label = "Question asked",
         .blurb = "Claude Code raises a notification — a permission prompt or an idle nudge.",
         .hook_event = "Notification",
-        .default_title = "THE ASHEN ONE BECKONS",
+        .default_title = "Question asked",
         .default_style = .soul,
         .default_sound = .chime,
         .default_enabled = true,
@@ -156,7 +175,31 @@ pub const events = [_]Event{
         .blurb = "Any tool call comes back a failure.",
         .hook_event = "PostToolUseFailure",
         .matcher = "*",
-        .default_title = "YOU DIED",
+        .default_title = "Tool call failed",
+        .default_style = .death,
+        .default_sound = .gong,
+        .default_enabled = true,
+    },
+    .{
+        .key = "rate_limited",
+        .label = "Rate limited",
+        .blurb = "The turn ends because the API rate-limited us or is overloaded.",
+        .hook_event = "StopFailure",
+        .matcher = "rate_limit|overloaded",
+        .matcher_label = "rate limit / overloaded",
+        .default_title = "Rate limited",
+        .default_style = .hollow,
+        .default_sound = .thud,
+        .default_enabled = true,
+    },
+    .{
+        .key = "api_error",
+        .label = "API error",
+        .blurb = "The turn ends on an API error — authentication, billing, or a server fault.",
+        .hook_event = "StopFailure",
+        .matcher = api_error_types,
+        .matcher_label = "any non-rate-limit API error",
+        .default_title = "API error",
         .default_style = .death,
         .default_sound = .gong,
         .default_enabled = true,
@@ -168,7 +211,7 @@ pub const events = [_]Event{
         .hook_event = "PostToolUse",
         .matcher = "Bash",
         .condition = "Bash(gh pr create:*)",
-        .default_title = "SUMMON SIGN CAST",
+        .default_title = "PR created",
         .default_style = .soul,
         .default_sound = .choir,
         .default_enabled = true,
@@ -180,7 +223,7 @@ pub const events = [_]Event{
         .hook_event = "PostToolUse",
         .matcher = "Bash",
         .condition = "Bash(git commit:*)",
-        .default_title = "BONFIRE KINDLED",
+        .default_title = "Commit made",
         .default_style = .bonfire,
         .default_sound = .ember,
         .default_enabled = true,
@@ -190,7 +233,7 @@ pub const events = [_]Event{
         .label = "Permission denied",
         .blurb = "A tool call is refused.",
         .hook_event = "PermissionDenied",
-        .default_title = "COVENANT BROKEN",
+        .default_title = "Permission denied",
         .default_style = .covenant,
         .default_sound = .thud,
         .default_enabled = false,
@@ -200,7 +243,7 @@ pub const events = [_]Event{
         .label = "Subagent finished",
         .blurb = "A spawned subagent returns.",
         .hook_event = "SubagentStop",
-        .default_title = "PHANTOM RETURNS",
+        .default_title = "Subagent finished",
         .default_style = .soul,
         .default_sound = .chime,
         .default_enabled = false,
@@ -210,7 +253,7 @@ pub const events = [_]Event{
         .label = "Context compacted",
         .blurb = "The conversation is about to be compacted.",
         .hook_event = "PreCompact",
-        .default_title = "HOLLOWING",
+        .default_title = "Context compacted",
         .default_style = .hollow,
         .default_sound = .thud,
         .default_enabled = false,
@@ -220,7 +263,7 @@ pub const events = [_]Event{
         .label = "Session ended",
         .blurb = "The session terminates.",
         .hook_event = "SessionEnd",
-        .default_title = "ASHEN ONE DEPARTS",
+        .default_title = "Session ended",
         .default_style = .hollow,
         .default_sound = .gong,
         .default_enabled = false,
@@ -246,5 +289,21 @@ test "event keys are unique and fit the config line format" {
         try std.testing.expect(event.key.len > 0);
         try std.testing.expect(std.mem.indexOfScalar(u8, event.key, ' ') == null);
         try std.testing.expect(event.default_title.len <= max_title_bytes);
+    }
+}
+
+test "the shipped headline is just the event's name" {
+    // The flavour is the user's to write, so nothing in the catalog
+    // gets to be clever on their behalf.
+    for (events) |event| {
+        try std.testing.expectEqualStrings(event.label, event.default_title);
+        try std.testing.expectEqualStrings("", event.default_subtitle);
+    }
+}
+
+test "a matcher that is an alternation carries a readable label" {
+    for (events) |event| {
+        if (std.mem.indexOfScalar(u8, event.matcher, '|') == null) continue;
+        try std.testing.expect(event.matcher_label.len > 0);
     }
 }

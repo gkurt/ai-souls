@@ -1,8 +1,8 @@
 //! Installing and removing the global Claude Code hooks.
 //!
-//! This is the one part of Claude Souls that edits a file it does not
+//! This is the one part of AI Souls that edits a file it does not
 //! own, so it is deliberately conservative: `~/.claude/settings.json` is
-//! parsed as JSON, only Claude Souls' own hook entries are touched, and
+//! parsed as JSON, only our own hook entries are touched, and
 //! everything else — key order, unrelated hooks, unrelated settings — is
 //! carried through untouched. A timestamp-free backup is written once,
 //! the first time we ever modify the file.
@@ -35,7 +35,7 @@ pub const Error = error{
 } || std.mem.Allocator.Error;
 
 /// Rewrite `~/.claude/settings.json` so its hook set matches `config`:
-/// every enabled catalog event gets exactly one Claude Souls entry, and
+/// every enabled catalog event gets exactly one AI Souls entry, and
 /// every disabled one has its entry removed. Returns what changed.
 pub fn install(
     gpa: std.mem.Allocator,
@@ -46,7 +46,7 @@ pub fn install(
     return apply(gpa, io, paths, config);
 }
 
-/// Remove every Claude Souls hook entry and leave the rest of the file
+/// Remove every AI Souls hook entry and leave the rest of the file
 /// alone.
 pub fn uninstall(
     gpa: std.mem.Allocator,
@@ -160,7 +160,7 @@ fn basename(path: []const u8) []const u8 {
     return path;
 }
 
-/// Drop every Claude Souls command from every matcher group, and drop
+/// Drop every AI Souls command from every matcher group, and drop
 /// groups we emptied. Returns how many commands were removed.
 fn stripOurs(arena: std.mem.Allocator, hooks: *std.json.ObjectMap) !usize {
     var removed: usize = 0;
@@ -199,7 +199,7 @@ fn stripOurs(arena: std.mem.Allocator, hooks: *std.json.ObjectMap) !usize {
     return removed;
 }
 
-/// Append one Claude Souls group per enabled catalog event.
+/// Append one AI Souls group per enabled catalog event.
 fn addOurs(
     arena: std.mem.Allocator,
     hooks: *std.json.ObjectMap,
