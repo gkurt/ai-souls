@@ -1,0 +1,509 @@
+//! Model, Msg, and update — the whole of Claude Souls' behaviour.
+//!
+//! Two windows come out of one model. The settings window is the app's
+//! shell window and is always declared. The overlay is model-declared:
+//! `overlay_active` IS its visibility, so a screen appears by flipping a
+//! bool and passes by flipping it back — there is no show/hide call
+//! anywhere.
+
+const std = @import("std");
+const native_sdk = @import("native_sdk");
+const canvas = native_sdk.canvas;
+
+const cli = @import("cli.zig");
+const config_mod = @import("config.zig");
+const paths_mod = @import("paths.zig");
+const souls = @import("souls.zig");
+
+pub const canvas_label = "settings-canvas";
+pub const overlay_window_label = "soul-overlay";
+pub const overlay_canvas_label = "overlay-canvas";
+pub const settings_window_label = "main";
+
+/// Effect keys. Timers, files, spawns, and audio each live in their own
+/// namespace, but keeping them globally distinct makes the log readable.
+const key_poll_timer: u64 = 1;
+const key_anim_timer: u64 = 2;
+const key_config_read: u64 = 10;
+const key_config_write: u64 = 11;
+const key_trigger_read: u64 = 12;
+const key_hooks_spawn: u64 = 20;
+const key_audio: u64 = 30;
+
+/// How often the app looks at the trigger file. Fast enough that a
+/// screen feels like a reaction, slow enough to be free.
+const poll_interval_ms: u64 = 200;
+/// Overlay animation cadence.
+const anim_interval_ms: u64 = 16;
+
+const fade_in_ms: u32 = 320;
+const fade_out_ms: u32 = 620;
+
+pub const status_capacity = 160;
+pub const StatusText = config_mod.Text(status_capacity);
+
+pub const Overlay = struct {
+    active: bool = false,
+    event_index: usize = 0,
+    started_ms: i64 = 0,
+    elapsed_ms: u32 = 0,
+    duration_ms: u32 = 2600,
+
+    /// 0..1 ink strength for the current moment: rise, hold, fall.
+    pub fn opacity(self: *const Overlay) f32 {
+        if (!self.active) return 0;
+        const elapsed: f32 = @floatFromInt(self.elapsed_ms);
+        const total: f32 = @floatFromInt(self.duration_ms);
+        const rise: f32 = @floatFromInt(fade_in_ms);
+        const fall: f32 = @floatFromInt(fade_out_ms);
+        if (elapsed < rise) return smoothstep(elapsed / rise);
+        if (elapsed > total - fall) {
+            const remaining = total - elapsed;
+            if (remaining <= 0) return 0;
+            return smoothstep(remaining / fall);
+        }
+        return 1;
+    }
+
+    /// The headline drifts up a few points as it fades in — the Souls
+    /// screens never just pop.
+    pub fn driftY(self: *const Overlay) f32 {
+        if (!self.active) return 0;
+        const elapsed: f32 = @floatFromInt(self.elapsed_ms);
+        const rise: f32 = @floatFromInt(fade_in_ms);
+        if (elapsed >= rise) return 0;
+        return (1 - smoothstep(elapsed / rise)) * 14;
+    }
+};
+
+fn smoothstep(t: f32) f32 {
+    const x = std.math.clamp(t, 0, 1);
+    return x * x * (3 - 2 * x);
+}
+
+pub const Field = enum { title, subtitle };
+
+pub const Model = struct {
+    paths: paths_mod.Paths = .{},
+    config: config_mod.Config = config_mod.Config.default(),
+
+    /// Which catalog row the detail pane is showing.
+    selected: usize = 0,
+    /// Caret/selection state for the two editable text fields. Reset
+    /// whenever the selected event changes, because the text under them
+    /// changes with it.
+    title_selection: canvas.TextSelection = .{},
+    subtitle_selection: canvas.TextSelection = .{},
+
+    status: StatusText = .{},
+    /// A hooks install/remove is in flight; the buttons stay disabled
+    /// until the spawned process exits.
+    hooks_busy: bool = false,
+    /// Config differs from what is on disk.
+    dirty: bool = false,
+
+    overlay: Overlay = .{},
+
+    /// Newest trigger stamp the app has acted on. Seeded at boot from
+    /// whatever is already on disk, so a fire that happened while the
+    /// app was closed does not ambush the next launch.
+    last_trigger_ms: i64 = 0,
+    trigger_seeded: bool = false,
+
+    /// Primary display size in logical points, measured in `main`.
+    screen_width: f32 = 1440,
+    screen_height: f32 = 900,
+
+    /// Per-pixel window transparency, so the screen floats over the
+    /// desktop instead of blanking it. Set from
+    /// `CLAUDE_SOULS_OPAQUE=1` at launch: some remote-desktop and
+    /// compositor setups cannot present a layered window, and a solid
+    /// banner beats an invisible one.
+    overlay_transparent: bool = true,
+
+    pub fn selectedEvent(self: *const Model) *const souls.Event {
+        return &souls.events[self.selected];
+    }
+
+    pub fn selectedSettings(self: *const Model) *const config_mod.EventSettings {
+        return &self.config.events[self.selected];
+    }
+
+    /// How many catalog events are switched on — the number of hooks an
+    /// install would write.
+    pub fn enabledCount(self: *const Model) usize {
+        var count: usize = 0;
+        for (self.config.events) |entry| {
+            if (entry.enabled) count += 1;
+        }
+        return count;
+    }
+};
+
+pub const Msg = union(enum) {
+    // ---- settings interactions
+    select: usize,
+    toggle_enabled,
+    cycle_style,
+    cycle_style_back,
+    cycle_sound,
+    cycle_sound_back,
+    volume_changed: f32,
+    duration_changed: f32,
+    title_edit: canvas.TextInputEvent,
+    subtitle_edit: canvas.TextInputEvent,
+    reset_event,
+    preview,
+    install_hooks,
+    uninstall_hooks,
+    open_settings,
+    quit_app,
+
+    // ---- effect results
+    config_loaded: native_sdk.EffectFileResult,
+    config_saved: native_sdk.EffectFileResult,
+    trigger_read: native_sdk.EffectFileResult,
+    hooks_line: native_sdk.EffectLine,
+    hooks_exit: native_sdk.EffectExit,
+    audio_event: native_sdk.EffectAudio,
+    poll_tick: native_sdk.EffectTimer,
+    anim_tick: native_sdk.EffectTimer,
+
+    /// The catalog list and the detail pane both bind these; the rest
+    /// arrive from the host.
+    pub const view_unbound = .{
+        "config_loaded",
+        "config_saved",
+        "trigger_read",
+        "hooks_line",
+        "hooks_exit",
+        "audio_event",
+        "poll_tick",
+        "anim_tick",
+    };
+};
+
+pub const Effects = native_sdk.Effects(Msg);
+
+/// Boot: start the trigger poll and load the saved config.
+pub fn init(model: *Model, fx: *Effects) void {
+    fx.startTimer(.{
+        .key = key_poll_timer,
+        .interval_ms = poll_interval_ms,
+        .mode = .repeating,
+        .on_fire = Effects.timerMsg(.poll_tick),
+    });
+    if (!model.paths.config.isEmpty()) {
+        fx.readFile(.{
+            .key = key_config_read,
+            .path = model.paths.config.slice(),
+            .on_result = Effects.fileMsg(.config_loaded),
+        });
+    }
+}
+
+pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
+    switch (msg) {
+        // ------------------------------------------------ settings
+        .select => |index| {
+            if (index >= souls.event_count) return;
+            model.selected = index;
+            syncCarets(model);
+        },
+        .toggle_enabled => {
+            const entry = &model.config.events[model.selected];
+            entry.enabled = !entry.enabled;
+            touch(model, fx);
+        },
+        .cycle_style => {
+            const entry = &model.config.events[model.selected];
+            entry.style = souls.Style.fromIndex(
+                @intCast((@intFromEnum(entry.style) + 1) % souls.Style.count),
+            );
+            touch(model, fx);
+        },
+        .cycle_style_back => {
+            const entry = &model.config.events[model.selected];
+            const current = @intFromEnum(entry.style);
+            const next = if (current == 0) souls.Style.count - 1 else current - 1;
+            entry.style = souls.Style.fromIndex(@intCast(next));
+            touch(model, fx);
+        },
+        .cycle_sound => {
+            const entry = &model.config.events[model.selected];
+            entry.sound = souls.Sound.fromIndex(
+                @intCast((@intFromEnum(entry.sound) + 1) % souls.Sound.count),
+            );
+            touch(model, fx);
+            playSound(model, fx, entry.sound, entry.volume);
+        },
+        .cycle_sound_back => {
+            const entry = &model.config.events[model.selected];
+            const current = @intFromEnum(entry.sound);
+            const next = if (current == 0) souls.Sound.count - 1 else current - 1;
+            entry.sound = souls.Sound.fromIndex(@intCast(next));
+            touch(model, fx);
+            playSound(model, fx, entry.sound, entry.volume);
+        },
+        .volume_changed => |fraction| {
+            const entry = &model.config.events[model.selected];
+            entry.volume = @intFromFloat(@round(std.math.clamp(fraction, 0, 1) * 100));
+            touch(model, fx);
+        },
+        .duration_changed => |fraction| {
+            const entry = &model.config.events[model.selected];
+            const span: f32 = @floatFromInt(config_mod.max_duration_ms - config_mod.min_duration_ms);
+            const base: f32 = @floatFromInt(config_mod.min_duration_ms);
+            entry.duration_ms = @intFromFloat(@round(base + std.math.clamp(fraction, 0, 1) * span));
+            touch(model, fx);
+        },
+        .title_edit => |event| {
+            const entry = &model.config.events[model.selected];
+            var buffer: [souls.max_title_bytes]u8 = undefined;
+            const state: canvas.TextEditState = .{
+                .text = entry.title.slice(),
+                .selection = model.title_selection,
+            };
+            const next = state.apply(event, &buffer) catch return;
+            entry.title.set(next.text);
+            model.title_selection = next.selection;
+            touch(model, fx);
+        },
+        .subtitle_edit => |event| {
+            const entry = &model.config.events[model.selected];
+            var buffer: [config_mod.max_subtitle_bytes]u8 = undefined;
+            const state: canvas.TextEditState = .{
+                .text = entry.subtitle.slice(),
+                .selection = model.subtitle_selection,
+            };
+            const next = state.apply(event, &buffer) catch return;
+            entry.subtitle.set(next.text);
+            model.subtitle_selection = next.selection;
+            touch(model, fx);
+        },
+        .reset_event => {
+            model.config.events[model.selected] =
+                config_mod.EventSettings.fromCatalog(souls.events[model.selected]);
+            syncCarets(model);
+            touch(model, fx);
+        },
+        .preview => showScreen(model, fx, model.selected),
+
+        .install_hooks => runHooksVerb(model, fx, "install-hooks"),
+        .uninstall_hooks => runHooksVerb(model, fx, "uninstall-hooks"),
+
+        .open_settings => fx.showWindow(settings_window_label),
+        .quit_app => fx.quitApp(),
+
+        // ------------------------------------------------ effects
+        .config_loaded => |result| {
+            if (result.outcome == .ok) {
+                model.config = config_mod.Config.parse(result.bytes);
+            }
+            // A missing config is the expected first run: keep the
+            // compiled defaults and say nothing alarming.
+            syncCarets(model);
+            model.dirty = false;
+        },
+        .config_saved => |result| {
+            if (result.outcome != .ok) {
+                model.status.set("Could not write the settings file.");
+            }
+        },
+        .trigger_read => |result| {
+
+            // The FIRST poll result settles the baseline whatever it
+            // says — including "no such file", which is the ordinary
+            // first-run answer. Seeding only on a successful read would
+            // make the very first real fire look like the baseline and
+            // swallow it.
+            const first_poll = !model.trigger_seeded;
+            model.trigger_seeded = true;
+
+            if (result.outcome != .ok) return;
+            const trigger = cli.parseTrigger(result.bytes) orelse return;
+            if (first_poll) {
+                // A stamp already on disk at launch is history: a fire
+                // that happened while the app was closed must not
+                // ambush the user now.
+                model.last_trigger_ms = trigger.stamp_ms;
+                return;
+            }
+            if (trigger.stamp_ms == model.last_trigger_ms) return;
+            model.last_trigger_ms = trigger.stamp_ms;
+            if (!model.config.events[trigger.event_index].enabled) return;
+            showScreen(model, fx, trigger.event_index);
+        },
+        .hooks_line => |line| {
+            // The CLI prints one summary line; surface it verbatim.
+            model.status.set(std.mem.trim(u8, line.line, " \r\n"));
+        },
+        .hooks_exit => |exit| {
+            model.hooks_busy = false;
+            if (exit.reason != .exited or exit.code != 0) {
+                if (model.status.len == 0) {
+                    model.status.set("The hook update failed. Run `claude-souls status` for detail.");
+                }
+            }
+        },
+        .audio_event => |event| {
+            if (event.kind == .failed or event.kind == .rejected) {
+                model.status.set("That sound could not be played.");
+            }
+        },
+
+        .poll_tick => |timer| {
+            if (timer.outcome != .fired) return;
+            if (model.paths.trigger.isEmpty()) return;
+            fx.readFile(.{
+                .key = key_trigger_read,
+                .path = model.paths.trigger.slice(),
+                .on_result = Effects.fileMsg(.trigger_read),
+            });
+        },
+        .anim_tick => |timer| {
+            if (timer.outcome != .fired) return;
+            if (!model.overlay.active) return;
+            const elapsed = fx.wallMs() - model.overlay.started_ms;
+            if (elapsed < 0) return;
+            model.overlay.elapsed_ms = @intCast(@min(
+                elapsed,
+                @as(i64, @intCast(model.overlay.duration_ms)),
+            ));
+            if (model.overlay.elapsed_ms >= model.overlay.duration_ms) {
+                // Presence is visibility: clearing the flag closes the
+                // window on the next reconcile.
+                model.overlay.active = false;
+                fx.cancelTimer(key_anim_timer);
+                fx.stopAudio();
+            }
+        },
+    }
+}
+
+/// Mark the config dirty and persist it. Settings apply live, so there
+/// is no Save button to forget to press.
+fn touch(model: *Model, fx: *Effects) void {
+    model.dirty = true;
+    if (model.paths.config.isEmpty()) return;
+    var buffer: [config_mod.max_config_bytes]u8 = undefined;
+    const text = model.config.serialize(&buffer);
+    if (text.len == 0) return;
+    fx.writeFile(.{
+        .key = key_config_write,
+        .path = model.paths.config.slice(),
+        .bytes = text,
+        .on_result = Effects.fileMsg(.config_saved),
+    });
+    model.dirty = false;
+}
+
+/// The carets must not point past the end of text they no longer refer
+/// to.
+fn syncCarets(model: *Model) void {
+    const entry = model.selectedSettings();
+    model.title_selection = canvas.TextSelection.collapsed(entry.title.len);
+    model.subtitle_selection = canvas.TextSelection.collapsed(entry.subtitle.len);
+}
+
+fn showScreen(model: *Model, fx: *Effects, index: usize) void {
+    if (index >= souls.event_count) return;
+    const entry = &model.config.events[index];
+
+    model.overlay = .{
+        .active = true,
+        .event_index = index,
+        .started_ms = fx.wallMs(),
+        .elapsed_ms = 0,
+        .duration_ms = entry.duration_ms,
+    };
+    fx.startTimer(.{
+        .key = key_anim_timer,
+        .interval_ms = anim_interval_ms,
+        .mode = .repeating,
+        .on_fire = Effects.timerMsg(.anim_tick),
+    });
+    playSound(model, fx, entry.sound, entry.volume);
+}
+
+fn playSound(model: *Model, fx: *Effects, sound: souls.Sound, volume: u8) void {
+    if (sound == .none) {
+        fx.stopAudio();
+        return;
+    }
+    var buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const path = model.paths.asset(&buffer, sound.path());
+    fx.setAudioVolume(@as(f32, @floatFromInt(volume)) / 100.0);
+    fx.playAudio(.{
+        .key = key_audio,
+        .path = path,
+        .on_event = Effects.audioMsg(.audio_event),
+    });
+}
+
+/// Hand the settings.json merge to our own binary, which has an
+/// allocator and a JSON parser. `update` stays pure.
+fn runHooksVerb(model: *Model, fx: *Effects, verb: []const u8) void {
+    if (model.hooks_busy) return;
+    if (model.paths.exe.isEmpty()) {
+        model.status.set("Could not find this executable's own path.");
+        return;
+    }
+    model.hooks_busy = true;
+    model.status.set("");
+    fx.spawn(.{
+        .key = key_hooks_spawn,
+        .argv = &.{ model.paths.exe.slice(), verb },
+        .on_line = Effects.lineMsg(.hooks_line),
+        .on_exit = Effects.exitMsg(.hooks_exit),
+    });
+}
+
+// -------------------------------------------------------------- tests
+
+const testing = std.testing;
+
+test "opacity rises, holds, and falls inside the configured duration" {
+    var overlay: Overlay = .{ .active = true, .duration_ms = 2600 };
+
+    overlay.elapsed_ms = 0;
+    try testing.expectApproxEqAbs(@as(f32, 0), overlay.opacity(), 0.001);
+
+    overlay.elapsed_ms = fade_in_ms;
+    try testing.expectApproxEqAbs(@as(f32, 1), overlay.opacity(), 0.001);
+
+    overlay.elapsed_ms = 1500;
+    try testing.expectApproxEqAbs(@as(f32, 1), overlay.opacity(), 0.001);
+
+    overlay.elapsed_ms = 2600;
+    try testing.expectApproxEqAbs(@as(f32, 0), overlay.opacity(), 0.001);
+}
+
+test "a short screen still fades all the way in and out" {
+    // The floor duration is shorter than fade-in plus fade-out, so the
+    // curves overlap; opacity must stay in range and start and end dark.
+    var overlay: Overlay = .{ .active = true, .duration_ms = config_mod.min_duration_ms };
+    var elapsed: u32 = 0;
+    while (elapsed <= overlay.duration_ms) : (elapsed += 10) {
+        overlay.elapsed_ms = elapsed;
+        const value = overlay.opacity();
+        try testing.expect(value >= 0 and value <= 1);
+    }
+    overlay.elapsed_ms = 0;
+    try testing.expectApproxEqAbs(@as(f32, 0), overlay.opacity(), 0.001);
+    overlay.elapsed_ms = overlay.duration_ms;
+    try testing.expectApproxEqAbs(@as(f32, 0), overlay.opacity(), 0.001);
+}
+
+test "an inactive overlay paints nothing" {
+    const overlay: Overlay = .{ .active = false, .elapsed_ms = 100, .duration_ms = 2600 };
+    try testing.expectEqual(@as(f32, 0), overlay.opacity());
+    try testing.expectEqual(@as(f32, 0), overlay.driftY());
+}
+
+test "enabledCount tracks the toggles" {
+    var model: Model = .{};
+    const before = model.enabledCount();
+    model.config.events[0].enabled = !model.config.events[0].enabled;
+    try testing.expect(model.enabledCount() != before);
+}

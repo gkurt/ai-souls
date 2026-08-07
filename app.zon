@@ -1,0 +1,42 @@
+.{
+    .id = "dev.native_sdk.claude-souls",
+    .name = "claude-souls",
+    .display_name = "Claude Souls",
+    .description = "Dark Souls screens for Claude Code.",
+    .version = "0.1.0",
+    .icons = .{"assets/icon.png"},
+    .platforms = .{ "macos", "windows", "linux" },
+    .permissions = .{ "view", "command" },
+    // `tray` is what lets the settings window close to a status item
+    // instead of quitting: the app has to stay alive to answer hooks.
+    .capabilities = .{ "native_views", "gpu_surfaces", "tray" },
+    .shell = .{
+        .windows = .{
+            .{
+                .label = "main",
+                .title = "Claude Souls",
+                .width = 900,
+                .height = 640,
+                .min_width = 780,
+                .min_height = 520,
+                .restore_state = false,
+                .restore_policy = "center_on_primary",
+                .close_policy = "hide",
+                .views = .{
+                    .{ .label = "settings-canvas", .kind = "gpu_surface", .fill = true, .role = "Settings canvas", .accessibility_label = "Claude Souls settings", .gpu_pixel_format = "bgra8_unorm", .gpu_present_mode = "timer", .gpu_alpha_mode = "opaque", .gpu_color_space = "srgb", .gpu_vsync = true },
+                },
+            },
+        },
+    },
+    // No WebViews anywhere in this app, but the Windows host gates
+    // runtime-created native views (the overlay's canvas) on the system
+    // engine being selected — dropping this leaves the overlay window
+    // created but view-less, and therefore never shown.
+    .web_engine = "system",
+    .security = .{
+        .navigation = .{
+            .allowed_origins = .{ "zero://app", "zero://inline" },
+            .external_links = .{ .action = "deny" },
+        },
+    },
+}
