@@ -419,6 +419,29 @@ fn startApp(io: std.Io, paths: *const paths_mod.Paths) void {
     _ = &child;
 }
 
+/// Is this executable somewhere that will be deleted out from under it?
+///
+/// `npx` unpacks a package into `.../_npx/<hash>/node_modules/...` and
+/// npm garbage-collects that directory whenever it feels like it. An
+/// installed hook names the binary by absolute path, so hooks written
+/// from there keep pointing at a file that is no longer on disk — and
+/// because our hooks are `async` with a five second timeout, Claude
+/// Code swallows the failure. The screens would simply stop, with
+/// nothing anywhere saying why.
+///
+/// Matched on a whole path SEGMENT, so a project that merely has the
+/// letters in its name is not caught.
+pub fn isTransientPath(path: []const u8) bool {
+    var start: usize = 0;
+    for (path, 0..) |byte, index| {
+        if (byte == '/' or byte == '\\') {
+            if (eq(path[start..index], "_npx")) return true;
+            start = index + 1;
+        }
+    }
+    return eq(path[start..], "_npx");
+}
+
 /// `install [agent]` / `uninstall [agent]`. The agent argument is
 /// optional and today has exactly one legal value, but naming it is
 /// what keeps the command line stable when there are two.
@@ -429,6 +452,24 @@ fn hooksVerb(
     rest: []const []const u8,
     installing: bool,
 ) Outcome {
+    // Only installing. Removing hooks from a throwaway copy is a
+    // perfectly good thing to want, and it edits nothing that outlives
+    // the run.
+    if (installing and isTransientPath(paths.exe.slice())) {
+        say(io,
+            \\{s}: not installing hooks from a temporary copy.
+            \\
+            \\A hook names this binary by absolute path, and this one is
+            \\running out of an npx cache that npm deletes later. The hooks
+            \\would survive the binary and then quietly do nothing.
+            \\
+            \\  npm install -g {s}
+            \\  {s} install
+            \\
+        , .{ command_name, command_name, command_name });
+        return .handled_failed;
+    }
+
     if (rest.len > 0) {
         var known = false;
         for (agents) |agent| {
@@ -685,6 +726,26 @@ test "a message carries its whole screen through the trigger file" {
 test "the settings command is not an event" {
     const parsed = parseTrigger("7 !settings").?;
     try std.testing.expectEqual(Action.settings, parsed.action);
+}
+
+test "an npx cache is recognised as temporary, and a real install is not" {
+    // The exact shapes npm uses, on both separators.
+    try std.testing.expect(isTransientPath(
+        "C:\\Users\\x\\AppData\\Local\\npm-cache\\_npx\\ab12\\node_modules\\ai-souls\\vendor\\win32-x64\\ai-souls.exe",
+    ));
+    try std.testing.expect(isTransientPath("/home/x/.npm/_npx/ab12/node_modules/ai-souls/vendor/linux-x64/ai-souls"));
+
+    // A global install, which is the whole point of telling them apart.
+    try std.testing.expect(!isTransientPath("/usr/local/lib/node_modules/ai-souls/vendor/darwin-arm64/ai-souls"));
+    try std.testing.expect(!isTransientPath(
+        "C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\ai-souls\\vendor\\win32-x64\\ai-souls.exe",
+    ));
+    try std.testing.expect(!isTransientPath("S:\\Work\\ai-souls\\zig-out\\bin\\ai-souls.exe"));
+
+    // A segment that merely CONTAINS the marker is not the marker.
+    try std.testing.expect(!isTransientPath("/home/x/_npx_notreally/ai-souls"));
+    try std.testing.expect(!isTransientPath("/home/x/my_npx/ai-souls"));
+    try std.testing.expect(!isTransientPath(""));
 }
 
 test "no event key could ever be read as a command" {

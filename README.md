@@ -71,6 +71,13 @@ ai-souls serve             run in the tray with no window
 today. It exists so that adding a second one does not change the shape
 of the command line.
 
+`install` needs a real install, not `npx`. A hook names this binary by
+absolute path, and npx unpacks into a cache directory that npm deletes
+later — so hooks written from there outlive the binary and then quietly
+do nothing, because they run `async` and Claude Code never sees the
+failure. `install` recognises an npx path and refuses; everything else,
+`uninstall` included, works fine from one.
+
 Anything that is not a verb is a headline, so quoting is optional and
 `--` forces the issue:
 
