@@ -28,12 +28,26 @@ const key_sound_timer: u64 = 3;
 const key_config_read: u64 = 10;
 const key_config_write: u64 = 11;
 const key_trigger_read: u64 = 12;
+const key_alive_write: u64 = 13;
 const key_hooks_spawn: u64 = 20;
 const key_audio: u64 = 30;
 
 /// How often the app looks at the trigger file. Fast enough that a
 /// screen feels like a reaction, slow enough to be free.
 const poll_interval_ms: u64 = 200;
+
+/// How often the idle heartbeat goes into `~/.ai-souls/alive`, in poll
+/// ticks — once every two seconds. `stampAlive` also runs the moment a
+/// trigger is consumed, which is the write the CLI is actually waiting
+/// on; this slow beat exists so `ai-souls status` can say whether
+/// anything is home.
+const alive_every_ticks: u32 = 10;
+
+/// A trigger already on disk at boot is normally history — a fire from
+/// while the app was closed, which must not ambush the user now. Inside
+/// this window it is the opposite: the CLI writes a trigger and THEN
+/// starts the app precisely so it will be shown.
+const boot_replay_window_ms: i64 = 10_000;
 /// Overlay animation cadence: one tick per 60 Hz frame.
 ///
 /// Asking for LESS does not buy more frames, and measurably costs some.
@@ -89,7 +103,11 @@ const max_stall_skip_ms: u32 = 4000;
 
 pub const Overlay = struct {
     active: bool = false,
-    event_index: usize = 0,
+    /// What to draw and what to play. A COPY, not a catalog index: a
+    /// screen asked for from the command line has no catalog row behind
+    /// it, and one already playing should not change under a settings
+    /// edit halfway through.
+    entry: config_mod.EventSettings = .{},
     started_ms: i64 = 0,
     elapsed_ms: u32 = 0,
     duration_ms: u32 = 2600,
@@ -180,7 +198,7 @@ pub fn headlineSize(screen_width: f32) f32 {
 ///     260pt band (2.5x)     ->  20 fps
 ///
 /// (An opaque band of the same size measures 28, because it regains the
-/// Direct2D path — that is what `CLAUDE_SOULS_OPAQUE=1` buys, at the
+/// Direct2D path — that is what `AI_SOULS_OPAQUE=1` buys, at the
 /// cost of the bar no longer being see-through.)
 ///
 /// Those runs all had a sound playing, which was independently holding
@@ -238,6 +256,14 @@ pub const Model = struct {
     /// app was closed does not ambush the next launch.
     last_trigger_ms: i64 = 0,
     trigger_seeded: bool = false,
+    /// Poll ticks since boot, so the heartbeat can ride a slower beat
+    /// than the trigger read does.
+    poll_ticks: u32 = 0,
+    /// Something happened that `~/.ai-souls/alive` has not reported
+    /// yet. The next poll tick writes it (see `stampAlive`).
+    alive_dirty: bool = false,
+    /// Launched as `ai-souls serve`: go straight to the tray.
+    start_hidden: bool = false,
 
     /// Primary display size in logical points, measured in `main`.
     screen_width: f32 = 1440,
@@ -250,7 +276,7 @@ pub const Model = struct {
 
     /// Per-pixel window transparency, so the screen floats over the
     /// desktop instead of blanking it. Set from
-    /// `CLAUDE_SOULS_OPAQUE=1` at launch: some remote-desktop and
+    /// `AI_SOULS_OPAQUE=1` at launch: some remote-desktop and
     /// compositor setups cannot present a layered window, and a solid
     /// banner beats an invisible one.
     overlay_transparent: bool = true,
@@ -425,8 +451,8 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         },
         .preview => showScreen(model, fx, model.selected),
 
-        .install_hooks => runHooksVerb(model, fx, "install-hooks"),
-        .uninstall_hooks => runHooksVerb(model, fx, "uninstall-hooks"),
+        .install_hooks => runHooksVerb(model, fx, "install"),
+        .uninstall_hooks => runHooksVerb(model, fx, "uninstall"),
 
         .open_settings => fx.showWindow(settings_window_label),
         .quit_app => fx.quitApp(),
@@ -459,16 +485,24 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             if (result.outcome != .ok) return;
             const trigger = cli.parseTrigger(result.bytes) orelse return;
             if (first_poll) {
-                // A stamp already on disk at launch is history: a fire
-                // that happened while the app was closed must not
-                // ambush the user now.
                 model.last_trigger_ms = trigger.stamp_ms;
+                // Old news is swallowed; a trigger written seconds ago
+                // is the reason this process exists (see
+                // `boot_replay_window_ms`) and is shown.
+                const age = fx.wallMs() - trigger.stamp_ms;
+                // Acknowledged either way: a CLI still waiting on this
+                // stamp should stop waiting rather than start a second
+                // app because we decided the trigger was history.
+                model.alive_dirty = true;
+                if (age < 0 or age > boot_replay_window_ms) return;
+                dispatchTrigger(model, fx, trigger.action);
                 return;
             }
             if (trigger.stamp_ms == model.last_trigger_ms) return;
             model.last_trigger_ms = trigger.stamp_ms;
-            if (!model.config.events[trigger.event_index].enabled) return;
-            showScreen(model, fx, trigger.event_index);
+            // A CLI may be timing this one.
+            model.alive_dirty = true;
+            dispatchTrigger(model, fx, trigger.action);
         },
         .hooks_line => |line| {
             // The CLI prints one summary line; surface it verbatim.
@@ -478,7 +512,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             model.hooks_busy = false;
             if (exit.reason != .exited or exit.code != 0) {
                 if (model.status.len == 0) {
-                    model.status.set("The hook update failed. Run `claude-souls status` for detail.");
+                    model.status.set("The hook update failed. Run `ai-souls status` for detail.");
                 }
             }
         },
@@ -500,6 +534,14 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
 
         .poll_tick => |timer| {
             if (timer.outcome != .fired) return;
+            model.poll_ticks +%= 1;
+            // One writer, one key, at most once per tick — see
+            // `stampAlive` for why it is not written where it is
+            // earned.
+            if (model.alive_dirty or model.poll_ticks % alive_every_ticks == 1) {
+                model.alive_dirty = false;
+                stampAlive(model, fx);
+            }
             if (model.paths.trigger.isEmpty()) return;
             fx.readFile(.{
                 .key = key_trigger_read,
@@ -517,9 +559,57 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             // still have one fire in flight, and nothing should play
             // over an empty overlay.
             if (!model.overlay.active) return;
-            const entry = &model.config.events[model.overlay.event_index];
-            playSound(model, fx, entry.sound, entry.volume);
+            playSound(model, fx, model.overlay.entry.sound, model.overlay.entry.volume);
         },
+    }
+}
+
+/// Write `~/.ai-souls/alive`: when we last drew breath, and the newest
+/// trigger stamp we have acted on.
+///
+/// The second number is the whole point. `ai-souls "..."` writes a
+/// trigger and then waits to see it acknowledged here — a heartbeat
+/// alone can only say "something was alive recently", which is not the
+/// same question and gets the answer wrong for several seconds after a
+/// crash.
+///
+/// Called ONLY from the poll tick, with `alive_dirty` standing in for
+/// "there is something new to say". Writing it where the trigger is
+/// actually consumed would put two writes on one effect key inside a
+/// single tick — the tick's own heartbeat and the acknowledgement —
+/// and the second would be dropped for the first still being in
+/// flight. That is a one-in-ten coin flip on the acknowledgement the
+/// CLI is timing.
+///
+/// Fire-and-forget: nothing sensible can be done about a failed write,
+/// and the CLI has its own fallback.
+fn stampAlive(model: *Model, fx: *Effects) void {
+    if (model.paths.alive.isEmpty()) return;
+    var buffer: [48]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, "{d} {d}\n", .{
+        fx.wallMs(),
+        model.last_trigger_ms,
+    }) catch return;
+    fx.writeFile(.{
+        .key = key_alive_write,
+        .path = model.paths.alive.slice(),
+        .bytes = text,
+    });
+}
+
+fn dispatchTrigger(model: *Model, fx: *Effects, action: cli.Action) void {
+    switch (action) {
+        // A disabled event may still have a hook on disk — the hook set
+        // only catches up at the next install — so the arming check
+        // belongs here as well as in the installer.
+        .event => |index| {
+            if (!model.config.events[index].enabled) return;
+            showScreen(model, fx, index);
+        },
+        // Asked for by name from a terminal: shown as asked, whatever
+        // the catalog happens to be set to.
+        .message => |entry| showEntry(model, fx, entry),
+        .settings => fx.showWindow(settings_window_label),
     }
 }
 
@@ -617,12 +707,16 @@ fn syncCarets(model: *Model) void {
 
 fn showScreen(model: *Model, fx: *Effects, index: usize) void {
     if (index >= souls.event_count) return;
-    const entry = &model.config.events[index];
+    showEntry(model, fx, model.config.events[index]);
+}
 
+/// Put a screen up. The settings come in whole rather than by reference,
+/// so the catalog and the command line reach the same code.
+fn showEntry(model: *Model, fx: *Effects, entry: config_mod.EventSettings) void {
     const now = fx.wallMs();
     model.overlay = .{
         .active = true,
-        .event_index = index,
+        .entry = entry,
         .started_ms = now,
         .elapsed_ms = 0,
         .duration_ms = entry.duration_ms,

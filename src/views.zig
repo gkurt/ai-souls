@@ -102,7 +102,7 @@ pub fn overlayView(ui: *Ui, model: *const Model) Node {
     // idle overlay paints literally nothing.
     if (!overlay.active) return ui.column(.{ .grow = 1 }, .{});
 
-    const entry = &model.config.events[overlay.event_index];
+    const entry = &overlay.entry;
     const opacity = overlay.opacity();
     const drift = overlay.driftY();
     const edge = app.bandSoftEdge(model.screen_width, model.screen_height);

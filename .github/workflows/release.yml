@@ -1,0 +1,96 @@
+# Build the binary on each platform, then stage one npm package that
+# carries all of them.
+#
+# The mac and linux slots exist only because of this workflow: the
+# macOS host needs Apple's SDK and cannot be cross-compiled from the
+# Windows dev machine this project was written on. Until this has run
+# green, `dist/npm` has a win32-x64 binary and nothing else, and the
+# launcher says so plainly on any other platform.
+#
+# Publishing is deliberately NOT wired up. The last step uploads a
+# tarball; pushing it to the registry is a human decision.
+
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            slot: win32-x64
+            exe: ai-souls.exe
+          - runner: macos-14
+            slot: darwin-arm64
+            exe: ai-souls
+          - runner: macos-13
+            slot: darwin-x64
+            exe: ai-souls
+          - runner: ubuntu-latest
+            slot: linux-x64
+            exe: ai-souls
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm install -g @native-sdk/cli
+
+      # The suite is platform-independent, but a compile failure on a
+      # host nobody develops on is exactly what this job exists to find.
+      - run: native test
+      - run: native build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.slot }}
+          path: zig-out/bin/${{ matrix.exe }}
+          if-no-files-found: error
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: binaries
+          pattern: binary-*
+
+      # One slot per downloaded artifact, all into the same dist.
+      - name: Stage every slot
+        run: |
+          first=1
+          for dir in binaries/binary-*; do
+            slot="${dir#binaries/binary-}"
+            exe="$dir/ai-souls"
+            [ -f "$exe" ] || exe="$dir/ai-souls.exe"
+            if [ $first -eq 1 ]; then
+              node tools/package-npm.mjs --slot "$slot" --binary "$exe"
+              first=0
+            else
+              node tools/package-npm.mjs --keep --slot "$slot" --binary "$exe"
+            fi
+          done
+
+      - name: Pack
+        working-directory: dist/npm
+        run: npm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: dist/npm/*.tgz
+          if-no-files-found: error

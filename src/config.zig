@@ -6,7 +6,7 @@
 //! unknown key from a newer build is skipped instead of fatal and a
 //! missing key simply keeps its compiled default.
 //!
-//!     claude-souls 1
+//!     ai-souls 1
 //!     e <key> <enabled> <style> <sound> <volume> <duration_ms> <title>|<subtitle>
 
 const std = @import("std");
@@ -59,16 +59,24 @@ pub const max_duration_ms: u32 = 10_000;
 /// Starting playback level, 0..100.
 pub const default_volume: u8 = 20;
 
+/// How long a screen stays up unless something says otherwise.
+pub const default_duration_ms: u32 = 2600;
+
+/// One screen's worth of settings.
+///
+/// Every field has a default, because this is also the shape of an
+/// ad-hoc screen asked for on the command line — where the only thing
+/// the user necessarily supplied is the headline.
 pub const EventSettings = struct {
-    enabled: bool,
-    style: souls.Style,
-    sound: souls.Sound,
+    enabled: bool = false,
+    style: souls.Style = .death,
+    sound: souls.Sound = .none,
     /// 0..100; scaled to the player's 0..1 at playback.
-    volume: u8,
+    volume: u8 = default_volume,
     /// Total time on screen, fades included.
-    duration_ms: u32,
-    title: Title,
-    subtitle: Subtitle,
+    duration_ms: u32 = default_duration_ms,
+    title: Title = .{},
+    subtitle: Subtitle = .{},
 
     pub fn fromCatalog(event: souls.Event) EventSettings {
         return .{
@@ -80,10 +88,55 @@ pub const EventSettings = struct {
             // has to be an accent, not a jump scare. The slider goes to
             // 100 for anyone who wants the gong.
             .volume = default_volume,
-            .duration_ms = 2600,
+            .duration_ms = default_duration_ms,
             .title = Title.from(event.default_title),
             .subtitle = Subtitle.from(event.default_subtitle),
         };
+    }
+
+    /// The five numbers a screen is made of, in the order both the
+    /// config file and the trigger file write them. Shared so the two
+    /// formats cannot drift apart.
+    pub fn writeFields(self: *const EventSettings, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.print("{d} {d} {d} {d} {s}|{s}", .{
+            @intFromEnum(self.style),
+            @intFromEnum(self.sound),
+            self.volume,
+            self.duration_ms,
+            self.title.slice(),
+            self.subtitle.slice(),
+        });
+    }
+
+    /// Read back what `writeFields` wrote. Anything missing or
+    /// unparseable keeps the value it already had, so a truncated line
+    /// degrades into a plainer screen instead of no screen.
+    pub fn readFields(self: *EventSettings, body: []const u8) void {
+        var head = body;
+        var tail: []const u8 = "";
+        if (fieldEnd(body, 4)) |cut| {
+            head = body[0..cut];
+            tail = std.mem.trimStart(u8, body[cut..], " ");
+        }
+
+        var fields = std.mem.tokenizeScalar(u8, head, ' ');
+        self.style = souls.Style.fromIndex(clampU8(parseU32(fields.next(), @intFromEnum(self.style))));
+        self.sound = souls.Sound.fromIndex(clampU8(parseU32(fields.next(), @intFromEnum(self.sound))));
+        self.volume = @min(100, clampU8(parseU32(fields.next(), self.volume)));
+        self.duration_ms = std.math.clamp(
+            parseU32(fields.next(), self.duration_ms),
+            min_duration_ms,
+            max_duration_ms,
+        );
+
+        if (tail.len == 0) return;
+        const split = std.mem.indexOfScalar(u8, tail, '|') orelse tail.len;
+        self.title.set(std.mem.trim(u8, tail[0..split], " "));
+        if (split < tail.len) {
+            self.subtitle.set(std.mem.trim(u8, tail[split + 1 ..], " "));
+        } else {
+            self.subtitle.set("");
+        }
     }
 };
 
@@ -114,76 +167,27 @@ pub const Config = struct {
     }
 
     fn parseEventLine(config: *Config, body: []const u8) void {
-        // The title/subtitle tail can hold spaces, so split it off
-        // before tokenizing the fixed numeric head.
-        var head = body;
-        var tail: []const u8 = "";
-        if (fieldEnd(body, 6)) |cut| {
-            head = body[0..cut];
-            tail = std.mem.trimStart(u8, body[cut..], " ");
-        }
-
-        var fields = std.mem.tokenizeScalar(u8, head, ' ');
-        const key = fields.next() orelse return;
-        const index = souls.indexOfKey(key) orelse return;
+        const key_end = fieldEnd(body, 1) orelse return;
+        const index = souls.indexOfKey(std.mem.trim(u8, body[0..key_end], " ")) orelse return;
         const entry = &config.events[index];
 
-        entry.enabled = parseU32(fields.next(), @intFromBool(entry.enabled)) != 0;
-        entry.style = souls.Style.fromIndex(clampU8(parseU32(fields.next(), @intFromEnum(entry.style))));
-        entry.sound = souls.Sound.fromIndex(clampU8(parseU32(fields.next(), @intFromEnum(entry.sound))));
-        entry.volume = @min(100, clampU8(parseU32(fields.next(), entry.volume)));
-        entry.duration_ms = std.math.clamp(
-            parseU32(fields.next(), entry.duration_ms),
-            min_duration_ms,
-            max_duration_ms,
-        );
+        const enabled_end = fieldEnd(body, 2) orelse return;
+        entry.enabled = parseU32(
+            std.mem.trim(u8, body[key_end..enabled_end], " "),
+            @intFromBool(entry.enabled),
+        ) != 0;
 
-        if (tail.len == 0) return;
-        const split = std.mem.indexOfScalar(u8, tail, '|') orelse tail.len;
-        entry.title.set(std.mem.trim(u8, tail[0..split], " "));
-        if (split < tail.len) {
-            entry.subtitle.set(std.mem.trim(u8, tail[split + 1 ..], " "));
-        } else {
-            entry.subtitle.set("");
-        }
-    }
-
-    /// Byte offset just past the `count`-th space-delimited field, or
-    /// null when the line has fewer fields than that.
-    fn fieldEnd(body: []const u8, count: usize) ?usize {
-        var seen: usize = 0;
-        var at: usize = 0;
-        while (seen < count) : (seen += 1) {
-            while (at < body.len and body[at] == ' ') at += 1;
-            if (at >= body.len) return null;
-            while (at < body.len and body[at] != ' ') at += 1;
-        }
-        return at;
-    }
-
-    fn parseU32(field: ?[]const u8, fallback: u32) u32 {
-        const text = field orelse return fallback;
-        return std.fmt.parseInt(u32, text, 10) catch fallback;
-    }
-
-    fn clampU8(value: u32) u8 {
-        return @intCast(@min(value, 255));
+        // Everything after `enabled` is the shared screen encoding.
+        entry.readFields(std.mem.trimStart(u8, body[enabled_end..], " "));
     }
 
     pub fn write(self: *const Config, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("claude-souls {d}\n", .{format_version});
+        try writer.print("ai-souls {d}\n", .{format_version});
         for (souls.events, 0..) |event, index| {
             const entry = &self.events[index];
-            try writer.print("e {s} {d} {d} {d} {d} {d} {s}|{s}\n", .{
-                event.key,
-                @intFromBool(entry.enabled),
-                @intFromEnum(entry.style),
-                @intFromEnum(entry.sound),
-                entry.volume,
-                entry.duration_ms,
-                entry.title.slice(),
-                entry.subtitle.slice(),
-            });
+            try writer.print("e {s} {d} ", .{ event.key, @intFromBool(entry.enabled) });
+            try entry.writeFields(writer);
+            try writer.writeAll("\n");
         }
     }
 
@@ -195,6 +199,28 @@ pub const Config = struct {
         return writer.buffered();
     }
 };
+
+/// Byte offset just past the `count`-th space-delimited field, or null
+/// when the line has fewer fields than that.
+fn fieldEnd(body: []const u8, count: usize) ?usize {
+    var seen: usize = 0;
+    var at: usize = 0;
+    while (seen < count) : (seen += 1) {
+        while (at < body.len and body[at] == ' ') at += 1;
+        if (at >= body.len) return null;
+        while (at < body.len and body[at] != ' ') at += 1;
+    }
+    return at;
+}
+
+fn parseU32(field: ?[]const u8, fallback: u32) u32 {
+    const text = field orelse return fallback;
+    return std.fmt.parseInt(u32, text, 10) catch fallback;
+}
+
+fn clampU8(value: u32) u8 {
+    return @intCast(@min(value, 255));
+}
 
 test "defaults round-trip through the codec" {
     var config = Config.default();
@@ -217,7 +243,7 @@ test "defaults round-trip through the codec" {
 
 test "unknown keys and junk lines leave the defaults standing" {
     const parsed = Config.parse(
-        \\claude-souls 1
+        \\ai-souls 1
         \\# a comment
         \\e not_a_real_event 1 0 0 50 1000 NOPE|
         \\garbage

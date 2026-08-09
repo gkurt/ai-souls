@@ -1,11 +1,12 @@
 //! AI Souls — Dark Souls screens for your coding agent.
 //!
-//! Claude Code is the only agent wired up today, which is why the
-//! binary, the config directory and the hook identity are all still
-//! spelled `claude-souls`. Those are on-disk contracts with an existing
-//! install; the product name is not.
+//! Claude Code is the only agent wired up today, but nothing on disk is
+//! named after it any more: the binary, the config directory and the
+//! hook entries are all `ai-souls`. A pre-rename install is adopted on
+//! first run (`Paths.adoptLegacyConfig`) and its hooks are still
+//! recognised for removal (`hooks.our_binaries`).
 //!
-//! One binary, three jobs (see `cli.zig`). This file is the app: it
+//! One binary, several jobs (see `cli.zig`). This file is the app: it
 //! resolves the paths and the display size that `update` is not allowed
 //! to look up, declares the shell window and the tray item, and wires
 //! the two views onto the `UiApp` loop.
@@ -39,10 +40,9 @@ pub const AppUi = views.Ui;
 const SoulsApp = native_sdk.UiApp(Model, Msg);
 
 /// The on-disk identity: the binary's name, the tray/bundle key, and
-/// the prefix `hooks.zig` recognises its own entries by. Renaming the
-/// product does not get to move these.
-const app_name = "claude-souls";
-const bundle_id = "dev.native_sdk.claude-souls";
+/// the prefix `hooks.zig` recognises its own entries by.
+const app_name = "ai-souls";
+const bundle_id = "dev.native_sdk.ai-souls";
 
 /// What a person sees.
 const display_name = "AI Souls";
@@ -53,6 +53,11 @@ const display_name = "AI Souls";
 /// is how `overlay_style` finds the right HWND.
 const overlay_window_title = "AI Souls Overlay";
 const overlay_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(overlay_window_title);
+
+/// The settings window's title, for the same reason: `serve` finds it
+/// by title to put it away. `FindWindowExW` matches the whole title, so
+/// this and `overlay_window_title` never collide despite the prefix.
+const settings_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(display_name);
 
 // ---------------------------------------------------------------- type
 //
@@ -234,12 +239,18 @@ fn onCommand(name: []const u8) ?Msg {
 
 // --------------------------------------------------------------- entry
 
-pub fn initialModel(paths: paths_mod.Paths, size: screen.Size, opaque_overlay: bool) Model {
+pub fn initialModel(
+    paths: paths_mod.Paths,
+    size: screen.Size,
+    opaque_overlay: bool,
+    start_hidden: bool,
+) Model {
     return .{
         .paths = paths,
         .screen_width = size.width,
         .screen_height = size.height,
         .overlay_transparent = !opaque_overlay,
+        .start_hidden = start_hidden,
     };
 }
 
@@ -249,24 +260,32 @@ pub fn main(init: std.process.Init) !void {
 
     var paths = paths_mod.Paths.resolve(io, init.environ_map);
     resolveAssetsRoot(io, &paths);
+    // Before anything reads the config: an upgrade from a build that
+    // spelled itself claude-souls should keep its settings.
+    _ = paths.adoptLegacyConfig(io);
 
     // The CLI verbs run before anything GUI exists — `fire` in
     // particular sits on Claude Code's critical path and must not pay
     // for a window system it will never use.
     const args = init.minimal.args.toSlice(arena) catch &[_][]const u8{};
-    switch (cli.run(init.gpa, io, args, &paths)) {
+    const mode = cli.run(init.gpa, io, args, &paths);
+    switch (mode) {
         .handled_ok => return,
         // Exit rather than returning an error: the verb already printed
         // something a human can act on, and a Zig error trace stapled
         // underneath it would only be noise.
         .handled_failed => std.process.exit(1),
-        .run_app => {},
+        .run_app, .run_app_hidden => {},
     }
 
     // The overlay window does not exist yet — this waits for it, then
     // fixes the two things the descriptor cannot express. See
     // `overlay_style` for why neither can be done declaratively.
     overlay_style.adopt(overlay_window_title_w);
+    // `serve`: the app was started to answer a message, so the settings
+    // window goes straight away rather than opening over the banner it
+    // was started to draw.
+    if (mode == .run_app_hidden) overlay_style.hideSettings(settings_window_title_w);
 
     const app_state = try SoulsApp.create(std.heap.page_allocator, .{
         .name = app_name,
@@ -283,11 +302,17 @@ pub fn main(init: std.process.Init) !void {
         .init_fx = app.init,
     });
     defer app_state.destroy();
-    const opaque_overlay = if (init.environ_map.get("CLAUDE_SOULS_OPAQUE")) |value|
+    const opaque_overlay = if (init.environ_map.get("AI_SOULS_OPAQUE") orelse
+        init.environ_map.get("CLAUDE_SOULS_OPAQUE")) |value|
         !std.mem.eql(u8, value, "0")
     else
         false;
-    app_state.model = initialModel(paths, screen.primary(), opaque_overlay);
+    app_state.model = initialModel(
+        paths,
+        screen.primary(),
+        opaque_overlay,
+        mode == .run_app_hidden,
+    );
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = app_name,

@@ -1,8 +1,8 @@
 .{
-    .id = "dev.native_sdk.claude-souls",
-    .name = "claude-souls",
-    // `name` is the binary and the on-disk identity, and stays put;
-    // `display_name` is the product.
+    .id = "dev.native_sdk.ai-souls",
+    // `name` is the binary and the on-disk identity; `display_name` is
+    // what a person sees.
+    .name = "ai-souls",
     .display_name = "AI Souls",
     .description = "Dark Souls screens for your coding agent.",
     .version = "0.1.0",

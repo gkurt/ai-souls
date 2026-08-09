@@ -26,9 +26,9 @@ const Harness = struct {
         effects.* = app.Effects.init(allocator);
         effects.executor = .fake;
         var model: app.Model = .{};
-        model.paths.config.set("/tmp/claude-souls-test/config.txt");
-        model.paths.trigger.set("/tmp/claude-souls-test/trigger");
-        model.paths.exe.set("/tmp/claude-souls-test/claude-souls");
+        model.paths.config.set("/tmp/ai-souls-test/config.txt");
+        model.paths.trigger.set("/tmp/ai-souls-test/trigger");
+        model.paths.exe.set("/tmp/ai-souls-test/ai-souls");
         return .{ .model = model, .effects = effects, .allocator = allocator };
     }
 
@@ -78,7 +78,9 @@ test "a fresh trigger raises the overlay for the right event" {
     harness.send(.{ .trigger_read = Harness.fileResult(12, "1700000000500 tool_failed\n") });
 
     try testing.expect(harness.model.overlay.active);
-    try testing.expectEqual(souls.indexOfKey("tool_failed").?, harness.model.overlay.event_index);
+    const expected = harness.model.config.events[souls.indexOfKey("tool_failed").?];
+    try testing.expectEqualStrings(expected.title.slice(), harness.model.overlay.entry.title.slice());
+    try testing.expectEqual(expected.sound, harness.model.overlay.entry.sound);
 }
 
 test "the same trigger read twice shows one screen" {
@@ -106,6 +108,160 @@ test "a disabled event's trigger is ignored" {
     try testing.expect(!harness.model.overlay.active);
     // Still consumed, so re-enabling does not replay it.
     try testing.expectEqual(@as(i64, 2), harness.model.last_trigger_ms);
+}
+
+test "a message from the command line shows exactly what it says" {
+    // No catalog row behind this screen: the trigger line IS the
+    // screen, and nothing in the config gets a vote.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "1 session_start\n") });
+    harness.send(.{ .trigger_read = Harness.fileResult(
+        12,
+        "2 !say 5 6 70 3000 PRAISE THE SUN|\\[T]/\n",
+    ) });
+
+    try testing.expect(harness.model.overlay.active);
+    const entry = harness.model.overlay.entry;
+    try testing.expectEqualStrings("PRAISE THE SUN", entry.title.slice());
+    try testing.expectEqualStrings("\\[T]/", entry.subtitle.slice());
+    try testing.expectEqual(souls.Style.covenant, entry.style);
+    try testing.expectEqual(souls.Sound.you_died, entry.sound);
+    try testing.expectEqual(@as(u32, 3000), harness.model.overlay.duration_ms);
+}
+
+test "a message ignores whether any event is armed" {
+    // Every event switched off is a perfectly ordinary configuration,
+    // and it must not silence something asked for by hand.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+    for (&harness.model.config.events) |*entry| entry.enabled = false;
+
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "1 session_start\n") });
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "2 !say 0 0 20 2600 HELLO|\n") });
+
+    try testing.expect(harness.model.overlay.active);
+}
+
+test "the settings command opens the window instead of a screen" {
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "1 session_start\n") });
+    const before = harness.effects.window_action_state.show_count;
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "2 !settings\n") });
+
+    try testing.expect(harness.effects.window_action_state.show_count > before);
+    try testing.expect(!harness.model.overlay.active);
+}
+
+test "a trigger written moments before launch is honoured" {
+    // `ai-souls "..."` writes the trigger and THEN starts the app, so
+    // the first poll of a just-started process is exactly the case that
+    // must not be treated as history.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+
+    var line: [cli.max_trigger_bytes]u8 = undefined;
+    const fresh = try std.fmt.bufPrint(
+        &line,
+        "{d} !say 0 0 20 2600 JUST NOW|\n",
+        .{cli.nowMs(testing.io)},
+    );
+    harness.send(.{ .trigger_read = Harness.fileResult(12, fresh) });
+
+    try testing.expect(harness.model.overlay.active);
+    try testing.expectEqualStrings("JUST NOW", harness.model.overlay.entry.title.slice());
+}
+
+/// The newest `alive` file the harness's effects channel was asked to
+/// write. The fake executor keeps every request pending and does not
+/// promise slot order, so "newest" is by content rather than position —
+/// which is also what a real reader of the file would see, since each
+/// write replaces the last.
+fn writtenAlive(harness: *Harness) ?cli.Alive {
+    var index: usize = 0;
+    var found: ?cli.Alive = null;
+    while (harness.effects.pendingFileAt(index)) |request| : (index += 1) {
+        if (request.op != .write) continue;
+        if (!std.mem.endsWith(u8, request.path, "alive")) continue;
+        const alive = cli.parseAlive(request.bytes) orelse continue;
+        // The consumed stamp only ever climbs, so it orders the writes
+        // even when two land in the same millisecond.
+        if (found == null or alive.consumed_ms > found.?.consumed_ms) found = alive;
+    }
+    return found;
+}
+
+test "the app stamps a heartbeat so status can find it" {
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+    harness.model.paths.alive.set("/tmp/ai-souls-test/alive");
+
+    harness.send(.{ .poll_tick = .{ .key = 1, .outcome = .fired } });
+
+    const alive = writtenAlive(&harness) orelse return error.NoHeartbeat;
+    // Fresh by its own definition, which is the question `status` asks.
+    try testing.expect(cli.isFresh(cli.nowMs(testing.io), alive.heartbeat_ms));
+}
+
+test "acting on a trigger acknowledges its stamp" {
+    // This is the handshake `ai-souls "..."` waits on before deciding
+    // no app is listening. A heartbeat alone cannot answer it: an app
+    // killed a second ago still has a fresh one.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+    harness.model.paths.alive.set("/tmp/ai-souls-test/alive");
+
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "1 session_start\n") });
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "5150 !say 0 0 20 2600 HELLO|\n") });
+    // Published on the next poll rather than where it was earned, so
+    // the tick's own heartbeat cannot be holding the effect key.
+    harness.send(.{ .poll_tick = .{ .key = 1, .outcome = .fired } });
+
+    const alive = writtenAlive(&harness) orelse return error.NoAcknowledgement;
+    try testing.expectEqual(@as(i64, 5150), alive.consumed_ms);
+}
+
+test "a trigger the app decides to ignore is still acknowledged" {
+    // Otherwise the CLI waits out its whole deadline and starts a
+    // second app, every time a disabled event fires.
+    var harness = try Harness.init(testing.allocator);
+    defer harness.deinit();
+    harness.model.paths.alive.set("/tmp/ai-souls-test/alive");
+    harness.model.config.events[souls.indexOfKey("tool_failed").?].enabled = false;
+
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "1 session_start\n") });
+    harness.send(.{ .trigger_read = Harness.fileResult(12, "99 tool_failed\n") });
+    harness.send(.{ .poll_tick = .{ .key = 1, .outcome = .fired } });
+
+    try testing.expect(!harness.model.overlay.active);
+    const alive = writtenAlive(&harness) orelse return error.NoAcknowledgement;
+    try testing.expectEqual(@as(i64, 99), alive.consumed_ms);
+}
+
+test "an alive file is read back the way it was written" {
+    const alive = cli.parseAlive("1700000000000 1700000000500\n").?;
+    try testing.expectEqual(@as(i64, 1700000000000), alive.heartbeat_ms);
+    try testing.expectEqual(@as(i64, 1700000000500), alive.consumed_ms);
+
+    // A one-number file is what an older build wrote; it still reports
+    // a heartbeat, and simply never claims to have consumed anything.
+    const old = cli.parseAlive("1700000000000\n").?;
+    try testing.expectEqual(@as(i64, 1700000000000), old.heartbeat_ms);
+    try testing.expectEqual(@as(i64, 0), old.consumed_ms);
+
+    try testing.expect(cli.parseAlive("") == null);
+    try testing.expect(cli.parseAlive("nonsense") == null);
+}
+
+test "a heartbeat old enough to be a corpse is not mistaken for a pulse" {
+    const now: i64 = 1_000_000;
+    try testing.expect(cli.isFresh(now, now));
+    try testing.expect(cli.isFresh(now, now - cli.alive_stale_ms + 1));
+    try testing.expect(!cli.isFresh(now, now - cli.alive_stale_ms));
+    try testing.expect(!cli.isFresh(now, now - 60_000));
 }
 
 test "the overlay closes itself once its duration elapses" {

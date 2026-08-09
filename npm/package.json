@@ -1,0 +1,31 @@
+{
+  "name": "ai-souls",
+  "version": "0.1.0",
+  "description": "Dark Souls screens for your coding agent.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "ai-souls": "bin/ai-souls.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "bin",
+    "vendor",
+    "assets",
+    "README.md"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "hooks",
+    "overlay",
+    "dark-souls"
+  ]
+}

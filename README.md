@@ -5,10 +5,12 @@ banner bleeds across your monitor; a session starts and another one
 lights up. It is transparent, always on top, click-through, and gone in
 a couple of seconds — you keep typing straight through it.
 
-Claude Code is the only agent wired up today. That is why the binary,
-the config directory and the installed hooks are all still spelled
-`claude-souls`: they are contracts with an existing install, and only
-the product name has moved.
+Claude Code is the only agent wired up today, but nothing is named after
+it: the command, the config directory and the hook entries are all
+`ai-souls`. An install from before the rename is picked up on first run
+— `~/.claude-souls/config.txt` is adopted, and hooks written under the
+old name are still recognised, so `ai-souls install` replaces them
+rather than leaving every screen firing twice.
 
 Out of the box every headline is just the event's own name — "Session
 started", "Tool call failed". **YOU DIED** is a much better joke when
@@ -35,43 +37,111 @@ declarative native views in Zig, no browser, no WebView, one binary.
 └─────────────────────────────────────────────────────┘
 ```
 
+## Getting started
+
+```bash
+npm install -g ai-souls
+```
+
+```bash
+ai-souls install
+```
+
+That is it. Screens start appearing in every Claude Code session on the
+machine. To see one right now:
+
+```bash
+ai-souls "YOU DIED"
+```
+
+## The command
+
+```
+ai-souls <message>         put a headline on screen
+ai-souls settings          open the settings window
+ai-souls install [agent]   write the enabled hooks into the agent's settings
+ai-souls uninstall [agent] remove every AI Souls hook
+ai-souls status            show paths and the current per-event settings
+ai-souls events            list the event keys
+ai-souls fire <event>      show a catalog event's screen (this is what hooks run)
+ai-souls serve             run in the tray with no window
+```
+
+`agent` is optional and defaults to `claude`, the only one supported
+today. It exists so that adding a second one does not change the shape
+of the command line.
+
+Anything that is not a verb is a headline, so quoting is optional and
+`--` forces the issue:
+
+```bash
+ai-souls PRAISE THE SUN --style victory --sound choir
+```
+
+```bash
+ai-souls -- status
+```
+
+| Option | |
+| --- | --- |
+| `--style <name>` | death, bonfire, victory, soul, hollow, covenant |
+| `--sound <name>` | silent, gong, choir, chime, ember, thud, you-died |
+| `--volume <0-100>` | |
+| `--duration <ms>` | 600 to 10000 |
+| `--subtitle <text>` | |
+
+A message starts the app if nothing is running, and starts it in the
+tray — asking for a banner should not open a settings window over the
+top of it. The settings window closes to the tray rather than quitting,
+because the app has to stay alive to answer hooks. Quit from the tray
+menu.
+
 ## How it works
 
-One binary wearing three hats:
+One binary wearing several hats, and one small file between them:
 
 | Invocation | What it does |
 | --- | --- |
-| `claude-souls` | the app: settings window + the overlay |
-| `claude-souls fire <event>` | stamps `~/.claude-souls/trigger`; this is what hooks run |
-| `claude-souls install-hooks` | merges the enabled hooks into `~/.claude/settings.json` |
+| `ai-souls` | the app: settings window + the overlay |
+| `ai-souls serve` | the same app, straight to the tray |
+| `ai-souls fire <event>` | stamps `~/.ai-souls/trigger`; this is what hooks run |
+| `ai-souls "..."` | stamps the same file with a whole screen |
+| `ai-souls install` | merges the enabled hooks into `~/.claude/settings.json` |
 
-The running app polls the trigger file five times a second. A hook
-writes one short line and exits — so nothing in Claude Code's critical
-path ever waits on a window system. If the app is not running, a fire is
-a no-op that the next launch quietly discards instead of replaying.
+The running app polls the trigger five times a second. A hook writes one
+short line and exits, so nothing in Claude Code's critical path ever
+waits on a window system — and if the app is not running, a hook's fire
+is a no-op the next launch discards rather than replaying. A hook must
+never start an app; a person typing a message expects one to be there,
+so those two cases are deliberately different.
 
-## Getting started
+Which is why the app publishes `~/.ai-souls/alive`: a heartbeat, and the
+newest trigger stamp it has acted on. `ai-souls "..."` waits to see its
+own stamp come back before concluding nothing is listening. That is an
+acknowledgement rather than a guess, which matters because the app can
+be alive and unable to answer — starting a sound freezes the Win32
+message loop for two seconds flat.
+
+## Building it yourself
 
 ```bash
 npm install -g @native-sdk/cli
 ```
 
 ```bash
-native build
+native build          # zig-out/bin/ai-souls
+node tools/package-npm.mjs   # dist/npm, ready for `npm pack`
 ```
 
-Then run the binary from `zig-out/bin/`, open the settings window, arm
-the events you want, and press **Write hooks**. Screens start appearing
-in every Claude Code session on the machine.
+The npm package is a single tarball carrying one binary per platform
+under `vendor/<platform>-<arch>/`, with a Node launcher that picks one
+and execs it. Only `win32-x64` can be built on a Windows machine; the
+other slots are filled by `.github/workflows/release.yml`, which builds
+on each runner and stages them into one package. A platform with no
+binary gets a clear error from the launcher rather than a mystery.
 
-To take them all away again:
-
-```bash
-claude-souls uninstall-hooks
-```
-
-The settings window closes to a tray/menu-bar item rather than quitting —
-the app has to stay alive to answer hooks. Quit from the tray menu.
+Upgrading the package moves the binary, and installed hooks name it by
+absolute path — so run `ai-souls install` again after an upgrade.
 
 ## The catalog
 
@@ -111,13 +181,13 @@ what changes the hook set on disk.
 
 ## About your settings.json
 
-`install-hooks` parses `~/.claude/settings.json` as JSON and writes back
-only its own entries. Everything else — other hooks, unrelated settings,
-key order — is carried through untouched, and the original is backed up
-once to `settings.json.claude-souls-backup` before the first write.
-Our own entries are recognised by shape (a `command` hook
-running this binary with `fire <event>`), so `uninstall-hooks` never
-touches a hook it did not write. Installing twice is a no-op.
+`ai-souls install` parses `~/.claude/settings.json` as JSON and writes
+back only its own entries. Everything else — other hooks, unrelated
+settings, key order — is carried through untouched, and the original is
+backed up once to `settings.json.ai-souls-backup` before the first
+write. Our own entries are recognised by shape (a `command` hook running
+this binary with `fire <event>`), so `ai-souls uninstall` never touches
+a hook it did not write. Installing twice is a no-op.
 
 ## Sounds
 
@@ -143,9 +213,11 @@ those numbers are what `config.txt` stores.
 
 | Path | |
 | --- | --- |
-| `~/.claude-souls/config.txt` | per-event settings |
-| `~/.claude-souls/trigger` | the one file hooks write |
+| `~/.ai-souls/config.txt` | per-event settings |
+| `~/.ai-souls/trigger` | the one file hooks and messages write |
+| `~/.ai-souls/alive` | heartbeat, and the newest trigger acted on |
 | `~/.claude/settings.json` | where the hooks are installed |
+| `~/.claude-souls/config.txt` | a pre-rename install, read once and left alone |
 
 ## Development
 
@@ -155,6 +227,10 @@ native test     # the test suite
 native check    # validate app.zon
 native build    # ReleaseFast binary
 native package  # platform bundle
+```
+
+```bash
+node tools/package-npm.mjs   # stage dist/npm from the last build
 ```
 
 The architecture in one paragraph: `src/souls.zig` is the comptime
@@ -228,7 +304,15 @@ A few things worth knowing:
   the `chrome` builder that does have one is main-canvas only. Built out
   of `.panel` each strip draws that widget's border, and 48 hairlines
   through the fade turn the gradient into a flat lighter block.
-- **`CLAUDE_SOULS_OPAQUE=1`** runs the overlay as a solid window: the
+- **`ai-souls serve` hides the settings window with a raw `SW_HIDE`,**
+  not with the SDK's `closeWindow`. The Win32 host's
+  `close_policy = "hide"` is a `WM_CLOSE` hook, and it documents that
+  runtime-initiated closes bypass it and really destroy the window —
+  measured as `window_closed` followed immediately by `stop`. Hiding
+  behind the host's back leaves it believing the window is on the glass,
+  which costs nothing here because the permanent overlay window already
+  keeps the app off the occluded path.
+- **`AI_SOULS_OPAQUE=1`** runs the overlay as a solid window: the
   band stops being see-through, and in exchange it regains the Direct2D
   path and runs noticeably smoother. It is also the fallback for
   remote-desktop and compositor setups that cannot present a layered

@@ -28,18 +28,29 @@ pub const PathText = struct {
     }
 };
 
+/// Where settings lived before the product became AI Souls. Read once,
+/// on the first run of a renamed build, and then never again.
+pub const legacy_dir_name = ".claude-souls";
+pub const dir_name = ".ai-souls";
+
 pub const Paths = struct {
     /// This binary, so the installed hooks can name it and the app can
     /// re-invoke itself for the settings.json merge.
     exe: PathText = .{},
     home: PathText = .{},
-    /// `~/.claude-souls`
+    /// `~/.ai-souls`
     app_dir: PathText = .{},
-    /// `~/.claude-souls/config.txt`
+    /// `~/.ai-souls/config.txt`
     config: PathText = .{},
-    /// `~/.claude-souls/trigger` — the one file hooks write and the
+    /// `~/.ai-souls/trigger` — the one file hooks write and the
     /// running app polls.
     trigger: PathText = .{},
+    /// `~/.ai-souls/alive` — a timestamp the running app refreshes, so
+    /// the CLI can tell whether anything is listening to the trigger.
+    alive: PathText = .{},
+    /// `~/.claude-souls/config.txt`, carried only so the first run of a
+    /// renamed build can adopt it.
+    legacy_config: PathText = .{},
     /// `~/.claude/settings.json` — the global Claude Code settings the
     /// hooks are installed into.
     claude_settings: PathText = .{},
@@ -60,18 +71,41 @@ pub const Paths = struct {
         paths.home.set(home);
 
         var scratch: [max_path_bytes]u8 = undefined;
-        var claude_dir_buffer: [max_path_bytes]u8 = undefined;
+        var dir_buffer: [max_path_bytes]u8 = undefined;
         if (home.len > 0) {
-            paths.app_dir.set(join(&scratch, home, ".claude-souls"));
+            paths.app_dir.set(join(&scratch, home, dir_name));
             paths.config.set(join(&scratch, paths.app_dir.slice(), "config.txt"));
             paths.trigger.set(join(&scratch, paths.app_dir.slice(), "trigger"));
-            // A separate buffer: `join`'s base may not live in the
-            // buffer it is writing into.
-            const claude_dir = join(&claude_dir_buffer, home, ".claude");
+            paths.alive.set(join(&scratch, paths.app_dir.slice(), "alive"));
+            // A separate buffer for each base: `join`'s base may not
+            // live in the buffer it is writing into.
+            const legacy_dir = join(&dir_buffer, home, legacy_dir_name);
+            paths.legacy_config.set(join(&scratch, legacy_dir, "config.txt"));
+            const claude_dir = join(&dir_buffer, home, ".claude");
             paths.claude_settings.set(join(&scratch, claude_dir, "settings.json"));
         }
 
         return paths;
+    }
+
+    /// Adopt a pre-rename `~/.claude-souls/config.txt` if this install
+    /// has none of its own.
+    ///
+    /// A copy, not a move: the old build may still be installed, and
+    /// leaving its directory intact means nothing is destroyed by trying
+    /// the new one. Best-effort throughout — a failure here just means
+    /// starting from the compiled defaults, which is what a genuinely
+    /// new install does anyway.
+    pub fn adoptLegacyConfig(self: *const Paths, io: std.Io) bool {
+        if (self.config.isEmpty() or self.legacy_config.isEmpty()) return false;
+        const cwd = std.Io.Dir.cwd();
+        if (cwd.access(io, self.config.slice(), .{})) |_| return false else |_| {}
+
+        var buffer: [64 * 1024]u8 = undefined;
+        const text = cwd.readFile(io, self.legacy_config.slice(), &buffer) catch return false;
+        cwd.createDirPath(io, self.app_dir.slice()) catch {};
+        cwd.writeFile(io, .{ .sub_path = self.config.slice(), .data = text }) catch return false;
+        return true;
     }
 
     /// Resolve a bundle-relative asset ("assets/sounds/gong.mp3") into
@@ -159,9 +193,17 @@ test "resolve builds every path from a home directory" {
     try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), ".claude") != null);
     try std.testing.expect(std.mem.endsWith(u8, paths.config.slice(), "config.txt"));
     try std.testing.expect(std.mem.endsWith(u8, paths.trigger.slice(), "trigger"));
+    try std.testing.expect(std.mem.endsWith(u8, paths.alive.slice(), "alive"));
     try std.testing.expect(std.mem.startsWith(u8, paths.app_dir.slice(), home));
-    // ".claude-souls" and ".claude" are different directories.
-    try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), ".claude-souls") == null);
+    // ".ai-souls" and ".claude" are different directories, and the
+    // hooks go in neither of the app's own.
+    try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), dir_name) == null);
+    try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), legacy_dir_name) == null);
+    try std.testing.expect(std.mem.indexOf(u8, paths.app_dir.slice(), dir_name) != null);
+    // The pre-rename config is still addressable, and is not the one we
+    // read by default.
+    try std.testing.expect(std.mem.indexOf(u8, paths.legacy_config.slice(), legacy_dir_name) != null);
+    try std.testing.expect(!std.mem.eql(u8, paths.config.slice(), paths.legacy_config.slice()));
 }
 
 test "a resolved asset is absolute and single-separator" {

@@ -49,6 +49,13 @@ pub const Style = enum(u8) {
         if (index >= count) return .death;
         return @enumFromInt(index);
     }
+
+    /// What someone types after `--style`. Case-insensitive against the
+    /// enum's own field names, so the CLI can never drift from the
+    /// picker in the settings window.
+    pub fn fromName(name: []const u8) ?Style {
+        return enumFromName(Style, name);
+    }
 };
 
 /// The bundled sound bank. Files live in `assets/sounds/<file>` and are
@@ -96,12 +103,40 @@ pub const Sound = enum(u8) {
         if (index >= count) return .none;
         return @enumFromInt(index);
     }
+
+    /// What someone types after `--sound`. "you-died" and "you_died"
+    /// both land, and "silent" is accepted for `.none` because that is
+    /// what the settings window calls it.
+    pub fn fromName(name: []const u8) ?Sound {
+        if (std.ascii.eqlIgnoreCase(name, "silent")) return .none;
+        return enumFromName(Sound, name);
+    }
 };
+
+/// Match `name` against an enum's field names, case-insensitively, with
+/// '-' and '_' treated as the same character. Shared by the two pickers
+/// above so neither can grow a hand-written table that falls behind.
+fn enumFromName(comptime E: type, name: []const u8) ?E {
+    inline for (@typeInfo(E).@"enum".fields) |field| {
+        if (looseEql(field.name, name)) return @enumFromInt(field.value);
+    }
+    return null;
+}
+
+fn looseEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        const l = if (left == '-') '_' else std.ascii.toLower(left);
+        const r = if (right == '-') '_' else std.ascii.toLower(right);
+        if (l != r) return false;
+    }
+    return true;
+}
 
 /// One row of the catalog: a Claude Code hook occasion plus the screen
 /// it summons.
 pub const Event = struct {
-    /// Stable id. Written to the config file, passed to `claude-souls
+    /// Stable id. Written to the config file, passed to `ai-souls
     /// fire <key>`, and used as the hook's own identity — never change
     /// one without a migration.
     key: []const u8,
@@ -183,7 +218,7 @@ pub const events = [_]Event{
         .matcher = "*",
         .default_title = "Tool call failed",
         .default_style = .death,
-        .default_sound = .gong,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -325,6 +360,34 @@ test "every sound but silence names a file, and names a different one" {
         }
         seen[index] = path;
     }
+}
+
+test "styles and sounds can be named on the command line" {
+    try std.testing.expectEqual(Style.death, Style.fromName("death").?);
+    try std.testing.expectEqual(Style.covenant, Style.fromName("COVENANT").?);
+    try std.testing.expect(Style.fromName("puce") == null);
+
+    try std.testing.expectEqual(Sound.you_died, Sound.fromName("you-died").?);
+    try std.testing.expectEqual(Sound.you_died, Sound.fromName("you_died").?);
+    try std.testing.expectEqual(Sound.none, Sound.fromName("silent").?);
+    try std.testing.expectEqual(Sound.none, Sound.fromName("none").?);
+    try std.testing.expect(Sound.fromName("kazoo") == null);
+
+    // Every name the settings window shows has to be typeable.
+    for (0..Sound.count) |index| {
+        const sound = Sound.fromIndex(@intCast(index));
+        try std.testing.expectEqual(sound, Sound.fromName(@tagName(sound)).?);
+    }
+    for (0..Style.count) |index| {
+        const style = Style.fromIndex(@intCast(index));
+        try std.testing.expectEqual(style, Style.fromName(@tagName(style)).?);
+    }
+}
+
+test "the death screen sounds like death" {
+    const index = indexOfKey("tool_failed").?;
+    try std.testing.expectEqual(Style.death, events[index].default_style);
+    try std.testing.expectEqual(Sound.you_died, events[index].default_sound);
 }
 
 test "the sound numbering on disk never moves" {

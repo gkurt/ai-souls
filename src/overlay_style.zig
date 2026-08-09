@@ -85,6 +85,32 @@ pub fn adopt(title: [:0]const u16) void {
     }
 }
 
+/// Put the settings window away as soon as it exists — `ai-souls serve`,
+/// which the CLI uses to start an app for someone who asked only for a
+/// banner.
+///
+/// A plain `SW_HIDE` rather than the SDK's `closeWindow`, because a
+/// runtime-initiated close is a real `DestroyWindow`: the Win32 host's
+/// `close_policy = .hide` hook is on `WM_CLOSE` and explicitly documents
+/// that programmatic closes bypass it, so asking the SDK to close this
+/// window ends the process. Measured exactly that — `window_closed`
+/// followed immediately by `stop`.
+///
+/// Hiding behind the host's back leaves it believing the window is on
+/// the glass. That costs nothing here: the permanent overlay window is
+/// always visible, so the host's occlusion heuristic already keeps the
+/// app awake, and the tray's Open item goes through `showWindow`, which
+/// puts it back either way.
+pub fn hideSettings(title: [:0]const u16) void {
+    switch (builtin.os.tag) {
+        .windows => {
+            const thread = std.Thread.spawn(.{}, watchHide, .{title}) catch return;
+            thread.detach();
+        },
+        else => {},
+    }
+}
+
 fn watch(title: [:0]const u16) void {
     var remaining: usize = attempts;
     while (remaining > 0) : (remaining -= 1) {
@@ -92,6 +118,21 @@ fn watch(title: [:0]const u16) void {
             apply(hwnd);
             centre(hwnd);
             return;
+        }
+        win.Sleep(poll_interval_ms);
+    }
+}
+
+fn watchHide(title: [:0]const u16) void {
+    var remaining: usize = attempts;
+    while (remaining > 0) : (remaining -= 1) {
+        if (findOwnWindow(title)) |hwnd| {
+            // Only once it is actually up: hiding a window the host has
+            // not shown yet is undone by the reveal that follows.
+            if (win.IsWindowVisible(hwnd) != 0) {
+                _ = win.ShowWindow(hwnd, win.sw_hide);
+                return;
+            }
         }
         win.Sleep(poll_interval_ms);
     }

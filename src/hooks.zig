@@ -9,7 +9,7 @@
 //!
 //! It runs in the CLI tier, never inside `update`: JSON needs an
 //! allocator, and the app reaches it by re-invoking its own binary
-//! (`claude-souls install-hooks`) through the effects channel.
+//! (`ai-souls install`) through the effects channel.
 
 const std = @import("std");
 const souls = @import("souls.zig");
@@ -131,6 +131,12 @@ fn hooksObject(arena: std.mem.Allocator, root: *std.json.Value) !*std.json.Objec
     return &root.object.getPtr("hooks").?.object;
 }
 
+/// Binary names an entry of ours can be running under. `claude-souls`
+/// is the pre-rename name: entries written by an older build have to
+/// stay recognisable, or `uninstall` would walk past them and `install`
+/// would leave a duplicate screen firing on every event.
+const our_binaries = [_][]const u8{ "ai-souls", "claude-souls" };
+
 /// Is this one hook command ours? Matched on shape rather than on a
 /// marker field, so we never write a key Claude Code's schema does not
 /// know about.
@@ -141,7 +147,12 @@ fn isOurCommand(entry: std.json.Value) bool {
 
     const command = entry.object.get("command") orelse return false;
     if (command != .string) return false;
-    if (!std.mem.startsWith(u8, basename(command.string), "claude-souls")) return false;
+    const name = basename(command.string);
+    var ours = false;
+    for (our_binaries) |candidate| {
+        if (std.mem.startsWith(u8, name, candidate)) ours = true;
+    }
+    if (!ours) return false;
 
     const args = entry.object.get("args") orelse return false;
     if (args != .array or args.array.items.len < 2) return false;
@@ -267,7 +278,12 @@ fn writeBackupOnce(
     settings_path: []const u8,
     original: []const u8,
 ) !void {
-    const backup = try std.fmt.allocPrint(arena, "{s}.claude-souls-backup", .{settings_path});
+    // A pre-rename backup counts: the point is one snapshot of the file
+    // as it was before AI Souls ever touched it, and that is what an
+    // older build already took.
+    const legacy = try std.fmt.allocPrint(arena, "{s}.claude-souls-backup", .{settings_path});
+    if (cwd.access(io, legacy, .{})) |_| return else |_| {}
+    const backup = try std.fmt.allocPrint(arena, "{s}.ai-souls-backup", .{settings_path});
     if (cwd.access(io, backup, .{})) |_| return else |_| {}
     cwd.writeFile(io, .{ .sub_path = backup, .data = original }) catch {};
 }
@@ -286,7 +302,7 @@ fn renderApplied(
     _ = try stripOurs(arena, hooks);
     if (config) |cfg| {
         var paths: paths_mod.Paths = .{};
-        paths.exe.set("/opt/claude-souls");
+        paths.exe.set("/opt/ai-souls");
         _ = try addOurs(arena, hooks, &paths, cfg);
     }
     try dropEmptyEventArrays(hooks);
@@ -313,7 +329,32 @@ test "install preserves unrelated settings and unrelated hooks" {
     try testing.expect(std.mem.indexOf(u8, rendered, "\"model\": \"opus\"") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "/usr/bin/say") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "\"turn_complete\"") != null);
-    try testing.expect(std.mem.indexOf(u8, rendered, "/opt/claude-souls") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "/opt/ai-souls") != null);
+}
+
+test "hooks written by the pre-rename binary are still ours to remove" {
+    // Someone who installed under the old name and then upgraded has
+    // claude-souls entries in their settings.json. Walking past them
+    // would leave every screen firing twice.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const cleaned = try renderApplied(arena,
+        \\{
+        \\  "hooks": {
+        \\    "Stop": [
+        \\      { "hooks": [
+        \\        { "type": "command", "command": "/opt/claude-souls", "args": ["fire", "turn_complete"] },
+        \\        { "type": "command", "command": "/usr/bin/say", "args": ["done"] }
+        \\      ] }
+        \\    ]
+        \\  }
+        \\}
+    , null);
+
+    try testing.expect(std.mem.indexOf(u8, cleaned, "claude-souls") == null);
+    try testing.expect(std.mem.indexOf(u8, cleaned, "/usr/bin/say") != null);
 }
 
 test "uninstall removes only our entries" {

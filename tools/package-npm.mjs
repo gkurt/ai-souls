@@ -1,0 +1,80 @@
+#!/usr/bin/env node
+// Assemble the npm package in dist/npm.
+//
+// One package for every platform rather than a family of
+// optionalDependencies: the binary is about 6 MB, so three of them plus
+// the sounds is a download people will not notice, and a single tarball
+// has no version-skew failure mode between the launcher and the slot it
+// resolves.
+//
+//   node tools/package-npm.mjs                     this machine's slot
+//   node tools/package-npm.mjs --keep              keep slots already staged
+//   node tools/package-npm.mjs --keep \            stage someone else's
+//     --slot darwin-arm64 --binary path/to/ai-souls
+//
+// The last form is how the mac and linux slots get filled: a build job
+// per platform uploads its binary, and one assemble job stages them all
+// (see .github/workflows/release.yml). They cannot be built here —
+// the macOS host needs Apple's SDK.
+
+import { cp, mkdir, readFile, rm, writeFile, readdir, chmod } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const out = join(root, "dist", "npm");
+const args = process.argv.slice(2);
+const keep = args.includes("--keep");
+const flag = (name) => {
+  const at = args.indexOf(`--${name}`);
+  return at >= 0 ? args[at + 1] : undefined;
+};
+
+const slot = flag("slot") ?? `${process.platform}-${process.arch}`;
+const exeName = slot.startsWith("win32") ? "ai-souls.exe" : "ai-souls";
+const built = flag("binary") ?? join(root, "zig-out", "bin", exeName);
+
+if (!existsSync(built)) {
+  console.error(`no binary at ${built} — run \`native build\` first`);
+  process.exit(1);
+}
+
+// The version lives in app.zon and nowhere else, so the package cannot
+// drift from the binary it wraps.
+const manifest = await readFile(join(root, "app.zon"), "utf8");
+const version = manifest.match(/\.version\s*=\s*"([^"]+)"/)?.[1];
+if (!version) {
+  console.error("could not find .version in app.zon");
+  process.exit(1);
+}
+
+if (!keep) await rm(out, { recursive: true, force: true });
+await mkdir(join(out, "vendor", slot), { recursive: true });
+
+await cp(join(root, "npm", "bin"), join(out, "bin"), { recursive: true });
+await cp(join(root, "assets"), join(out, "assets"), { recursive: true });
+await cp(join(root, "README.md"), join(out, "README.md"));
+await cp(built, join(out, "vendor", slot, exeName));
+// npm preserves the mode bit, and a binary that is not executable is a
+// confusing failure on the far side.
+if (!slot.startsWith("win32") && process.platform !== "win32") {
+  await chmod(join(out, "vendor", slot, exeName), 0o755);
+}
+
+const pkg = JSON.parse(await readFile(join(root, "npm", "package.json"), "utf8"));
+pkg.version = version;
+await writeFile(join(out, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+
+const slots = (await readdir(join(out, "vendor"), { withFileTypes: true }))
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+
+console.log(`ai-souls@${version} staged in dist/npm`);
+console.log(`  binaries: ${slots.join(", ")}`);
+for (const missing of ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]) {
+  if (!slots.includes(missing)) console.log(`  MISSING:  ${missing}`);
+}
+console.log("");
+console.log("Inspect it with `npm pack --dry-run` in dist/npm before publishing.");
