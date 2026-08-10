@@ -59,8 +59,24 @@ pub const max_duration_ms: u32 = 10_000;
 /// Starting playback level, 0..100.
 pub const default_volume: u8 = 20;
 
-/// How long a screen stays up unless something says otherwise.
+/// How long a screen stays up when it has nothing to say for itself.
 pub const default_duration_ms: u32 = 2600;
+
+/// How long a screen carrying `sound` should stay up by default.
+///
+/// The floor is readability, and the sound only ever raises it: the
+/// overlay stops audio when it ends, so a screen shorter than its own
+/// sting cuts the sting off. That is inaudible on a 0.9s thud and very
+/// audible on the 7.2s You Died, which used to be chopped at 2.6s.
+/// Never the other way round — a short sound does not earn a screen too
+/// quick to read.
+pub fn durationFor(sound: souls.Sound) u32 {
+    return std.math.clamp(
+        @max(default_duration_ms, sound.durationMs()),
+        min_duration_ms,
+        max_duration_ms,
+    );
+}
 
 /// One screen's worth of settings.
 ///
@@ -88,7 +104,7 @@ pub const EventSettings = struct {
             // has to be an accent, not a jump scare. The slider goes to
             // 100 for anyone who wants the gong.
             .volume = default_volume,
-            .duration_ms = default_duration_ms,
+            .duration_ms = durationFor(event.default_sound),
             .title = Title.from(event.default_title),
             .subtitle = Subtitle.from(event.default_subtitle),
         };
@@ -269,6 +285,23 @@ test "a fresh install starts quiet" {
     for (config.events) |entry| {
         try std.testing.expectEqual(default_volume, entry.volume);
     }
+}
+
+test "no screen is shipped too short to finish its own sound" {
+    const config = Config.default();
+    for (config.events, souls.events) |entry, event| {
+        try std.testing.expect(entry.duration_ms >= entry.sound.durationMs());
+        // And never shorter than the readable floor just because the
+        // sound is a 0.9s thud.
+        try std.testing.expect(entry.duration_ms >= default_duration_ms);
+        try std.testing.expect(entry.duration_ms <= max_duration_ms);
+        try std.testing.expectEqual(durationFor(event.default_sound), entry.duration_ms);
+    }
+
+    // The one the complaint was about: 2.6s of a 7.2s sting.
+    try std.testing.expectEqual(@as(u32, 7200), durationFor(.you_died));
+    try std.testing.expectEqual(default_duration_ms, durationFor(.thud));
+    try std.testing.expectEqual(default_duration_ms, durationFor(.none));
 }
 
 test "a title with no subtitle separator still parses" {

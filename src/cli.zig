@@ -182,6 +182,7 @@ fn message(io: std.Io, paths: *const paths_mod.Paths, args: []const []const u8) 
     var headline_len: usize = 0;
     var literal = false;
     var sound_chosen = false;
+    var duration_chosen = false;
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -201,6 +202,7 @@ fn message(io: std.Io, paths: *const paths_mod.Paths, args: []const []const u8) 
             const value = args[index];
             if (!applyOption(io, &entry, name, value)) return .handled_failed;
             if (eq(name, "sound")) sound_chosen = true;
+            if (eq(name, "duration")) duration_chosen = true;
             continue;
         }
 
@@ -228,6 +230,10 @@ fn message(io: std.Io, paths: *const paths_mod.Paths, args: []const []const u8) 
     // therefore needs no flags at all, which is the one command anyone
     // types first.
     if (!sound_chosen and entry.style == .death) entry.sound = .you_died;
+    // And then the screen is sized to hold whatever sound it ended up
+    // with — after the rule above, so a bare "YOU DIED" gets the seven
+    // seconds its sting needs rather than the default two and a half.
+    if (!duration_chosen) entry.duration_ms = config_mod.durationFor(entry.sound);
 
     // Not throttled — this one was asked for, out loud, by a person.
     // Recorded all the same, so the next hook does not open a second

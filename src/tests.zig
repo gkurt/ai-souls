@@ -133,6 +133,37 @@ test "a bare message sounds like the death screen it is" {
     }
 }
 
+test "a bare message stays up long enough to finish its sting" {
+    var paths: paths_mod.Paths = .{};
+    const outcome = cli.run(
+        testing.allocator,
+        testing.io,
+        &.{ "ai-souls", "YOU DIED" },
+        &paths,
+    );
+    switch (outcome) {
+        .run_screen => |entry| try testing.expectEqual(
+            souls.Sound.you_died.durationMs(),
+            entry.duration_ms,
+        ),
+        else => return error.ExpectedAScreen,
+    }
+}
+
+test "an explicit duration is never second-guessed" {
+    var paths: paths_mod.Paths = .{};
+    const outcome = cli.run(
+        testing.allocator,
+        testing.io,
+        &.{ "ai-souls", "YOU DIED", "--duration", "1000" },
+        &paths,
+    );
+    switch (outcome) {
+        .run_screen => |entry| try testing.expectEqual(@as(u32, 1000), entry.duration_ms),
+        else => return error.ExpectedAScreen,
+    }
+}
+
 test "a style that is not death keeps the ad-hoc gong" {
     var paths: paths_mod.Paths = .{};
     const outcome = cli.run(

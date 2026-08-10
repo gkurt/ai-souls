@@ -67,6 +67,10 @@ Invariants worth knowing before you change things:
 - **A `.death` row sounds like `.you_died`.** The red screen and that
   sting are one thing; a catalog test enforces it, and `ai-souls
   "..."` applies the same rule when no `--sound` was given.
+- **`Sound.durationMs` must match the files in `assets/sounds`.** A
+  screen is sized against it, because the overlay stops audio when it
+  ends — get it wrong and the sting is cut off with nothing to show
+  for it. Re-render a sound, re-measure it.
 - **A screen is a process.** `fire` resolves the event and becomes the banner;
   when the overlay ends it calls `fx.quitApp()`. Nothing is resident, so any
   new timer or poll you add runs on someone's machine only while a banner is

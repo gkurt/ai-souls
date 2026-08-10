@@ -290,9 +290,22 @@ fn detailPane(ui: *Ui, model: *const Model) Node {
                 volume_fraction,
                 Ui.valueMsg(.volume_changed),
             ),
+            // Cycling the sound deliberately leaves the duration alone —
+            // it is the user's number once they have touched it — so
+            // the label is where a sound that outlasts its screen owns
+            // up to being cut off. "Reset to default" sizes it to fit.
             sliderRow(
                 ui,
-                ui.fmt("On screen · {d}.{d:0>1}s", .{
+                if (entry.sound.durationMs() > entry.duration_ms) ui.fmt(
+                    "On screen · {d}.{d:0>1}s — {s} runs {d}.{d:0>1}s and gets cut off",
+                    .{
+                        entry.duration_ms / 1000,
+                        (entry.duration_ms % 1000) / 100,
+                        entry.sound.label(),
+                        entry.sound.durationMs() / 1000,
+                        (entry.sound.durationMs() % 1000) / 100,
+                    },
+                ) else ui.fmt("On screen · {d}.{d:0>1}s", .{
                     entry.duration_ms / 1000,
                     (entry.duration_ms % 1000) / 100,
                 }),

@@ -99,6 +99,26 @@ pub const Sound = enum(u8) {
         };
     }
 
+    /// How long the file actually runs, rounded up to the next tenth of
+    /// a second.
+    ///
+    /// Load-bearing, not trivia: the overlay stops audio when it ends,
+    /// so a screen shorter than its own sting chops it off mid-ring —
+    /// which is why a screen is sized against this. Measured from
+    /// `assets/sounds/*.mp3`; `tools/make-sounds.mjs` renders them and
+    /// is where the lengths come from. Change a file, change this.
+    pub fn durationMs(self: Sound) u32 {
+        return switch (self) {
+            .none => 0,
+            .gong => 3700,
+            .choir => 3300,
+            .chime => 1700,
+            .ember => 2000,
+            .thud => 1000,
+            .you_died => 7200,
+        };
+    }
+
     pub fn fromIndex(index: u8) Sound {
         if (index >= count) return .none;
         return @enumFromInt(index);
@@ -295,8 +315,9 @@ pub const events = [_]Event{
         // The burstiest event in the catalog by a distance: an agent
         // that has got something wrong tends to get it wrong repeatedly
         // and quickly, and the twentieth screen says nothing the first
-        // one did not.
-        .throttle_ms = 15_000,
+        // one did not. Wide, because the You Died screen it draws is
+        // itself seven seconds long — half a shorter window.
+        .throttle_ms = 30_000,
         .default_title = "Tool call failed",
         .default_style = .death,
         .default_sound = .you_died,

@@ -298,7 +298,7 @@ after an upgrade to bring that copy up to date.
 | Context compacted | `SessionStart` + `compact` | |
 | Turn completed | `Stop` | |
 | Question asked | `Notification` | max 1 / 10s |
-| Tool call failed | `PostToolUseFailure` | max 1 / 15s |
+| Tool call failed | `PostToolUseFailure` | max 1 / 30s |
 | Rate limited | `StopFailure` + `rate_limit\|overloaded` | max 1 / 60s |
 | API error | `StopFailure` + auth / billing / server faults | max 1 / 30s |
 | PR created | `PostToolUse` + `Bash(gh pr create:*)` | |
@@ -341,9 +341,12 @@ Per event you can set the headline and subtitle, the colour style
 (death / bonfire / victory / soul / hollow / covenant), the sound
 (gong / choir / chime / ember / thud / you died, or silence — a death
 screen starts out sounding like one),
-the volume, and how long it stays up. Sounds start at 20% — these
-arrive unannounced while you are concentrating, so the first one is an
-accent rather than a jump scare. Changes save themselves; only arming
+the volume, and how long it stays up. A screen starts out as long as
+its own sound, because the overlay stops the audio when it ends — the
+You Died sting runs 7.2 seconds, so a death screen does too. A shorter
+sound does not shorten the screen below the 2.6 seconds it takes to
+read one. Sounds start at 20% — these arrive unannounced while you are
+concentrating, so the first one is an accent rather than a jump scare. Changes save themselves; only arming
 or disarming an event needs **Write hooks** afterwards, because that is
 what changes the hook set on disk.
 
