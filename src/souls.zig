@@ -34,9 +34,23 @@ pub const Style = enum(u8) {
 
     /// sRGB ink for the headline. Deliberately desaturated: these draw
     /// over whatever the user is actually looking at.
+    ///
+    /// Desaturated has a floor, though, and Death was under it. The band
+    /// is near-black at 214/255, and `#82101d` — the colour the screen
+    /// is remembered as — carries 5% of the luminance the sRGB curve
+    /// allows. Against that bar it measured 1.20:1 over a mid desktop,
+    /// close enough in brightness that the type read as a warm smudge
+    /// rather than as words. Nothing was wrong with the ink; there was
+    /// just not enough of it.
+    ///
+    /// The bar is not the lever — opaque black behind the same red still
+    /// only reaches 1.97:1 — so the red gives a little instead. `#b01a25`
+    /// holds the same deep blood colour and lands between 1.77:1 and
+    /// 2.9:1, the spread being what the desktop behind a translucent band
+    /// does to it. The floor is the number that matters.
     pub fn ink(self: Style) [3]u8 {
         return switch (self) {
-            .death => .{ 0x82, 0x10, 0x1D },
+            .death => .{ 0xB0, 0x1A, 0x25 },
             .bonfire => .{ 0xE0, 0x8A, 0x3C },
             .victory => .{ 0xC9, 0xA2, 0x27 },
             .soul => .{ 0x8F, 0xB4, 0xD0 },
