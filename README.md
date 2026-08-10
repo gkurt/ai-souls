@@ -76,7 +76,8 @@ the PR it leads to, a tool failing and the turn ending on it — so they
 are ranked, and the louder one wins. A PR landing while the commit's
 banner is still up replaces it; a turn ending while anything else is on
 screen waits for a quieter moment that never comes. Same rank, no
-interruption.
+interruption. (Replacing a banner already on screen is Windows-only —
+on macOS the quieter event is dropped instead.)
 
 On top of that the noisy events get a cooldown, because an agent that has
 got something wrong tends to get it wrong twenty times in a row and the
@@ -181,8 +182,5 @@ no samples, nothing lifted from any game.
 
 Built with [Vercel's Native SDK](https://github.com/vercel-labs/native):
 declarative native views in Zig, no browser, no WebView, one binary.
-
-Developed on Windows 11. macOS builds and passes its tests in CI, but
-nobody has watched a banner appear there yet.
 
 Hacking on it? See [CONTRIBUTING.md](CONTRIBUTING.md).

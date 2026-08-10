@@ -118,12 +118,11 @@ pub fn hideSettings(title: [:0]const u16) void {
 /// Whether this platform can take another process's banner down, which
 /// is what makes `Event.priority` mean anything — see `throttle.zig`.
 ///
-/// Win32 only, for now. The mechanism below leans entirely on
-/// `FindWindowExW` being able to name a window in someone else's
-/// process; AppKit has no equivalent that does not go through
-/// Accessibility, and macOS has not had a banner watched on it yet.
-/// Where this is false the throttle keeps its absolute floor, so a
-/// screen is missed rather than drawn over another one.
+/// Win32 only. The mechanism below leans entirely on `FindWindowExW`
+/// being able to name a window in someone else's process, and AppKit
+/// has no equivalent that does not go through Accessibility. Where this
+/// is false the throttle keeps its absolute floor, so a screen is
+/// missed rather than drawn over another one.
 pub const can_dismiss = builtin.os.tag == .windows;
 
 /// Take down every banner belonging to ANOTHER copy of this app, so the

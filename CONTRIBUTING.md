@@ -123,7 +123,13 @@ another process, and AppKit has no equivalent outside Accessibility.
 Where it is false the floor is absolute and rank never fires, so a
 screen is missed rather than drawn over another one — which is the right
 way round to fail. The throttle tests for preemption skip themselves
-there. If macOS ever gets a real look, this is the gap to close.
+there, and the settings pane leaves the ranking line out rather than
+promising something that will not happen.
+
+Closing the gap means finding another process's banner window without
+`FindWindowExW`. The likeliest route is recording the screen's pid in
+`fired.txt` and sending it a signal, which the throttle already has the
+file for.
 
 ## Why hooks run a copy
 
@@ -314,9 +320,11 @@ runners. The packager drops the flag when it stages the public copy.
 ## Platform notes
 
 macOS uses the same code paths (`NSFloatingWindowLevel`,
-`ignoresMouseEvents`, a clear window background) and is expected to work.
-CI compiles it and runs the suite on a macOS runner, so it is known to
-build and known to pass — but nobody has watched a banner appear there.
+`ignoresMouseEvents`, a clear window background). CI compiles it and runs
+the suite on a macOS runner, so it builds and passes there. The one
+deliberate behavioural difference is preemption, which is Win32-only —
+see [Which screen wins](#which-screen-wins).
+
 Everything below was measured on Windows 11.
 
 - **A canvas window reveals on its first present, not on a timer.** This
