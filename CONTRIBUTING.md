@@ -148,6 +148,38 @@ binary built on a machine with AVX-512 can crash on one without it.
 `events`, and since `fire` boots the runtime in the foreground that
 chatter would go straight to the hook's stdout.
 
+### Provenance
+
+Three artifacts get signed, and they are signed in two different ways
+for two different audiences.
+
+`actions/attest-build-provenance` runs in the `build` job on each
+binary and in `package` on the tarball, so anything downloaded from a
+GitHub release can be checked against the workflow and commit that
+produced it:
+
+```bash
+gh attestation verify ai-souls-v0.2.1-win32-x64.exe --repo gkurt/ai-souls
+```
+
+It signs the binary where it is built, which for macOS is deliberately
+*after* `lipo` — the fused universal binary is what people download and
+neither slice is. Attestation is by digest, so the artifact round trip
+and the rename into `ai-souls-v1.2.3-<slot>.exe` do not disturb it. Both
+jobs need `id-token: write` and `attestations: write`.
+
+npm handles its own: trusted publishing attaches provenance without
+being asked, which is why there is no `--provenance` flag on the publish
+step. It needs a public `repository` field in `package.json` matching
+where it is published from — that field is load-bearing, not decoration.
+
+One open question the pipeline answers for itself. npm's docs do not say
+whether automatic provenance survives publishing a *pre-built tarball*
+rather than a directory, and that is what we do. The publish job checks
+the registry afterwards and emits a warning if the attestation is
+missing, rather than failing a release that already reached npm. If that
+warning ever shows up, the fix is to pack and publish in the same job.
+
 ## Releasing
 
 Changelogs and versions are managed by

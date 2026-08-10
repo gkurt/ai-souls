@@ -77,6 +77,10 @@ jobs:
             exe: ai-souls
             targets: aarch64-macos x86_64-macos
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write # sign the attestation
+      attestations: write # and record it against the repo
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -150,6 +154,20 @@ jobs:
           fi
           ls -l "${{ matrix.exe }}"
 
+      # Signed here rather than anywhere downstream, because this is the
+      # only place the binary has just been built from a known commit by
+      # a known workflow — that is the whole claim. Attestation is by
+      # digest, so the artifact round trip and the rename into
+      # `ai-souls-v1.2.3-win32-x64.exe` do not disturb it.
+      #
+      #   gh attestation verify <file> --repo gkurt/ai-souls
+      #
+      # For macOS this deliberately runs AFTER `lipo`: the fused binary
+      # is the thing people download, and neither slice is.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: out/${{ matrix.exe }}
+
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.slot }}
@@ -161,6 +179,10 @@ jobs:
     name: package
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -208,6 +230,13 @@ jobs:
       - name: Pack
         working-directory: dist/npm
         run: npm pack
+
+      # npm attaches its own provenance at publish time, but the same
+      # tarball is a GitHub release asset, and someone who downloads it
+      # from there never goes near the registry.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/npm/*.tgz
 
       - uses: actions/upload-artifact@v4
         with:
@@ -330,6 +359,31 @@ jobs:
       - name: Publish
         if: vars.NPM_PUBLISH == 'true'
         run: npm publish ./tarball/*.tgz --access public
+
+      # Trusted publishing attaches provenance without being asked, so
+      # there is no `--provenance` flag here. What the docs do not say is
+      # whether that still holds when publishing a pre-built tarball
+      # rather than a directory, and this is the only pipeline that can
+      # answer it.
+      #
+      # Reported, not enforced. The package is already on the registry by
+      # this point; failing the job would not take it back, and a red
+      # release over a missing badge would teach the wrong lesson.
+      - name: Did provenance land?
+        if: vars.NPM_PUBLISH == 'true'
+        run: |
+          set -uo pipefail
+          tarball=$(ls ./tarball/*.tgz)
+          version=$(basename "$tarball" .tgz)
+          version=${version#ai-souls-}
+          for attempt in 1 2 3; do
+            if npm view "ai-souls@${version}" --json 2>/dev/null | grep -q '"provenance"'; then
+              echo "provenance attached to ai-souls@${version}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::ai-souls@${version} published without provenance — trusted publishing may not generate it for a pre-built tarball. The GitHub attestation on the same tarball is unaffected."
 
       - name: Explain the skip
         if: vars.NPM_PUBLISH != 'true'

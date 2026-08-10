@@ -144,6 +144,13 @@ appears about 300 ms after the hook fires.
 | `~/.ai-souls/bin/` | the copy the hooks run, and its sounds |
 | `~/.claude/settings.json` | where the hooks live |
 
+Every binary and tarball is signed by the workflow that built it, so you
+can check a download came from this repo and not from someone else:
+
+```bash
+gh attestation verify ai-souls-v0.2.1-win32-x64.exe --repo gkurt/ai-souls
+```
+
 ## Credits
 
 Set in [EB Garamond](https://github.com/octaviopardo/EBGaramond12) (SIL
