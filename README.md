@@ -48,45 +48,27 @@ Claude Code is the only agent wired up so far.
 
 ## What fires when
 
-Listed loudest first — see below.
+On out of the box:
 
-| | Fires on | |
-| --- | --- | --- |
-| PR created | `gh pr create` succeeds | |
-| Question asked | a permission prompt or a nudge | max 1 / 10s |
-| API error | auth, billing, a server fault | max 1 / 30s |
-| Rate limited | the API tells you to wait | max 1 / 60s |
-| Commit made | `git commit` succeeds | |
-| Tool call failed | any failed tool call | max 1 / 30s |
-| Context compacted | compaction finishes | |
-| Turn completed | Claude stops replying | |
-| Permission denied | a tool call is refused | *(off)*, max 1 / 10s |
-| Subagent finished | | *(off)*, max 1 / 10s |
-| Compacting context | compaction begins | *(off)* |
-| Session started / resumed / cleared / forked | | *(off)* |
-| Session ended | | *(off)* |
+| | |
+| --- | --- |
+| PR created | `gh pr create` succeeds |
+| Commit made | `git commit` succeeds |
+| Turn completed | Claude stops replying |
+| Question asked | a permission prompt or a nudge |
+| Tool call failed | any failed tool call |
+| API error | auth, billing, a server fault |
+| Rate limited | the API tells you to wait |
+| Context compacted | compaction finishes |
 
-Of the five ways a session can start, only **Context compacted** is on:
-compaction happens without asking, takes a while, and the session that
-comes back has forgotten things. The other four you already know about,
-because you caused them.
+Off, and a switch away: compaction starting, permission denied, a
+subagent finishing, and the ways a session begins and ends.
 
-Screens never stack. Two of these often land seconds apart — a commit and
-the PR it leads to, a tool failing and the turn ending on it — so they
-are ranked, and the louder one wins. A PR landing while the commit's
-banner is still up replaces it; a turn ending while anything else is on
-screen waits for a quieter moment that never comes. Same rank, no
-interruption. (Replacing a banner already on screen is Windows-only —
-on macOS the quieter event is dropped instead.)
+Screens never stack, and the noisy ones are rate-limited — twenty
+failures out of one retry loop cost you one banner, not twenty. When two
+land at once the more important one wins.
 
-On top of that the noisy events get a cooldown, because an agent that has
-got something wrong tends to get it wrong twenty times in a row and the
-twentieth banner says nothing the first one did.
-
-A screen you ask for by hand outranks all of it and is never held back.
-
-`ai-souls status` prints the list as your install actually has it, ranks
-and cooldowns included.
+`ai-souls status` prints the list as your install actually has it.
 
 ## Making it yours
 
@@ -99,19 +81,12 @@ Per event: the headline and subtitle, a colour (death, bonfire, victory,
 soul, hollow, covenant), a sound (gong, choir, chime, ember, thud, you
 died, or silence), the volume, and how long it stays up.
 
-Everything ships as the red **YOU DIED** screen, whether or not the event
-is bad news — that is the one screen the game is actually known for, and
-the other five are our guesses at what a bonfire or a covenant banner
-should look like. They are all there to pick; none of them is a default
-until it has been checked against the real thing. Pull the whole catalog
-in five directions if you like.
+Every event ships as the red **YOU DIED** screen, good news included. The
+other five colours are there if you want them.
 
-A screen lasts as long as its own sound, so nothing gets cut off
-mid-ring. That makes the default seven seconds, which is how long the
-You Died sting runs — drag the duration down per event if that is more
-banner than you wanted. Sounds start at 20%, because these arrive while
-you are concentrating and the first one should be an accent, not a jump
-scare.
+Screens run seven seconds by default, long enough for the You Died sting
+to finish — drag that down if it is more banner than you wanted. Sounds
+start at 20%, because these arrive while you are concentrating.
 
 Changes save themselves. Only arming or disarming an event needs **Write
 hooks** afterwards, since that is what changes the hooks on disk.
@@ -148,30 +123,20 @@ npm's resolution cost every time you type one.
 
 ## Your settings.json is safe
 
-`install` parses `~/.claude/settings.json` and writes back only its own
-entries. Other hooks, unrelated settings and key order are carried
-through untouched, and the original is backed up once to
-`settings.json.ai-souls-backup` before the first write.
+`install` writes back only its own entries. Other hooks, unrelated
+settings and key order are carried through untouched, and the original is
+backed up once to `settings.json.ai-souls-backup` before the first write.
+`uninstall` never touches a hook it did not write, and installing twice
+is a no-op.
 
-AI Souls recognises its own entries by shape, so `uninstall` never
-touches a hook it did not write. Installing twice is a no-op.
-
-Nothing stays running between banners. No daemon, no tray icon, no
-polling — each screen is its own short-lived process, and a banner
-appears about 300 ms after the hook fires.
+Nothing stays running between banners — no daemon, no tray icon, no
+polling. Each screen is its own short-lived process.
 
 | Path | |
 | --- | --- |
 | `~/.ai-souls/config.txt` | your settings |
 | `~/.ai-souls/bin/` | the copy the hooks run, and its sounds |
 | `~/.claude/settings.json` | where the hooks live |
-
-Every binary and tarball is signed by the workflow that built it, so you
-can check a download came from this repo and not from someone else:
-
-```bash
-gh attestation verify ai-souls-v0.2.1-win32-x64.exe --repo gkurt/ai-souls
-```
 
 ## Credits
 

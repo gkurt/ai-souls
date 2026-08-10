@@ -153,5 +153,21 @@ README.md, CONTRIBUTING.md, this file, and the `--help` text in
 `src/cli.zig`. Documentation must not go stale.
 
 README.md is for someone deciding whether to install it and living with it
-afterwards — no internals, no measurements, no workflow names. Everything a
-contributor needs goes in CONTRIBUTING.md.
+afterwards. Everything else goes in CONTRIBUTING.md.
+
+A feature landing does **not** earn a README section. The bar is: would a
+person weighing this up, or living with it, be worse off not knowing? If
+not, it belongs in CONTRIBUTING. Specifically keep out:
+
+- Internals, measurements, workflow names, file formats.
+- Tables enumerating how a mechanism is configured — rank orders,
+  throttle windows, priority columns. State the *behaviour* in a line
+  ("screens never stack, the noisy ones are rate-limited") and stop.
+- Justifications for a default. Say what it is, not the argument behind
+  choosing it.
+- Platform caveats about which OS a feature works on.
+- Anything about what has or has not been tested. See the memory rule:
+  no claims the repo cannot prove.
+
+When a section grows past a screenful, that is the smell. Cut it back
+rather than adding a subheading.
