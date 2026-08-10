@@ -163,6 +163,11 @@ const mac = struct {
         send(target, sel(name), rect, @intFromBool(flag));
     }
 
+    fn msgWithFlag(target: Id, name: [:0]const u8, flag: bool) void {
+        const send: *const fn (Id, Sel, i8) callconv(.c) void = @ptrCast(&objc_msgSend);
+        send(target, sel(name), @intFromBool(flag));
+    }
+
     fn msgWithInteger(target: Id, name: [:0]const u8, argument: isize) void {
         const send: *const fn (Id, Sel, isize) callconv(.c) i8 = @ptrCast(&objc_msgSend);
         _ = send(target, sel(name), argument);
@@ -234,7 +239,7 @@ var place_attempts_left: usize = attempts;
 fn placeTick(_: ?*anyopaque) callconv(.c) void {
     const nsapp = mac.app();
     if (nsapp == null) return;
-    if (placeBanner(nsapp)) return;
+    if (dressBanner(nsapp)) return;
     if (place_attempts_left == 0) return;
     place_attempts_left -= 1;
     mac.dispatch_after_f(
@@ -245,13 +250,14 @@ fn placeTick(_: ?*anyopaque) callconv(.c) void {
     );
 }
 
-/// Move the banner onto the display it was declared for. Returns true
-/// once there is nothing left to do.
+/// Give the banner the frame and the look the descriptor cannot ask for.
+/// Returns true once there is nothing left to do. This is the macOS
+/// counterpart of `apply` and `centre`, and it runs for the same reason.
 ///
-/// Unlike `orderOutSettings` this wants the window BEFORE it is visible:
+/// Unlike `orderOutSettings` it wants the window BEFORE it is visible:
 /// the host creates it ordered-out and reveals it on its first present,
-/// and a move that lands after that reveal is one the eye can catch.
-fn placeBanner(nsapp: mac.Id) bool {
+/// and a change that lands after that reveal is one the eye can catch.
+fn dressBanner(nsapp: mac.Id) bool {
     const window = findWindow(nsapp, banner_title, false) orelse return false;
     mac.msgWithRectFlag(window, "setFrame:display:", .{
         .x = banner_frame.x,
@@ -259,6 +265,11 @@ fn placeBanner(nsapp: mac.Id) bool {
         .width = banner_frame.width,
         .height = banner_frame.height,
     }, true);
+    // AppKit shadows every window, and a translucent one shows its own
+    // shadow through itself: a black rim around all four sides of the
+    // bar, heaviest exactly where the soft edge is trying to dissolve
+    // into the desktop. The band draws its own edges and wants no help.
+    mac.msgWithFlag(window, "setHasShadow:", false);
     return true;
 }
 
