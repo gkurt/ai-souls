@@ -1,29 +1,10 @@
 # AI Souls
 
-Dark Souls screens for your coding agent. A tool call fails and a
-banner bleeds across your monitor; a session starts and another one
-lights up. It is transparent, always on top, click-through, and gone in
-a couple of seconds — you keep typing straight through it.
+Dark Souls screens for your coding agent. A tool call fails and a banner
+bleeds across your monitor. A commit lands and another one lights up.
 
-Claude Code is the only agent wired up today, but nothing is named after
-it: the command, the config directory and the hook entries are all
-`ai-souls`. An install from before the rename is picked up on first run
-— `~/.claude-souls/config.txt` is adopted, and hooks written under the
-old name are still recognised, so `ai-souls install` replaces them
-rather than leaving every screen firing twice.
-
-Out of the box every headline is just the event's own name — "Session
-started", "Tool call failed". **YOU DIED** is a much better joke when
-you chose it, so the settings window lets you write your own. Whatever
-you type is SHOUTED: the uppercasing happens at render time, so the
-setting keeps your text exactly as you wrote it.
-
-It is set in [EB Garamond](https://github.com/octaviopardo/EBGaramond12)
-(SIL Open Font License), embedded in the binary rather than borrowed
-from the OS so the screen is the same face on Windows and macOS.
-
-Built with [Vercel's Native SDK](https://github.com/vercel-labs/native):
-declarative native views in Zig, no browser, no WebView, one binary.
+It is transparent, always on top, click-through, and gone in a couple of
+seconds. You keep typing straight through it.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -39,76 +20,95 @@ declarative native views in Zig, no browser, no WebView, one binary.
 
 ## Getting started
 
-> **Not on npm yet.** Until the first release is published, grab a
+> **Not on npm yet.** The first release is on its way. Until then, grab a
 > binary from the
-> [latest CI run](https://github.com/gkurt/ai-souls/actions/workflows/ci.yml)
-> or build one — see [Building it yourself](#building-it-yourself).
+> [latest CI run](https://github.com/gkurt/ai-souls/actions/workflows/ci.yml).
 
 ```bash
 npx ai-souls install
 ```
 
 That is it. Screens start appearing in every Claude Code session on the
-machine, and they keep appearing after npm collects the npx cache —
-`install` puts its own copy in `~/.ai-souls` and points the hooks there,
-so nothing depends on the download surviving. See
-[Why hooks run a copy](#why-hooks-run-a-copy).
+machine, and they keep working after npm collects its cache — `install`
+tucks a copy away in `~/.ai-souls` and points the hooks at that.
 
-To change what the screens say:
-
-```bash
-npx ai-souls settings
-```
-
-### If you want the command as well
-
-The hooks do not need it, but `ai-souls` is nicer to have on your PATH
-than `npx ai-souls` — it is instant rather than ~700 ms, and it works
-offline.
-
-```bash
-npm install -g ai-souls
-ai-souls install
-```
-
-Either way, to see a screen right now:
+See one right now:
 
 ```bash
 npx ai-souls "YOU DIED"
 ```
 
+Change what they say:
+
+```bash
+npx ai-souls settings
+```
+
+Claude Code is the only agent wired up so far.
+
+## What fires when
+
+| | Fires on | |
+| --- | --- | --- |
+| Context compacted | compaction finishes | |
+| Turn completed | Claude stops replying | |
+| Question asked | a permission prompt or a nudge | max 1 / 10s |
+| Tool call failed | any failed tool call | max 1 / 30s |
+| Rate limited | the API tells you to wait | max 1 / 60s |
+| API error | auth, billing, a server fault | max 1 / 30s |
+| PR created | `gh pr create` succeeds | |
+| Commit made | `git commit` succeeds | |
+| Session started / resumed / cleared / forked | | *(off)* |
+| Compacting context | compaction begins | *(off)* |
+| Permission denied | a tool call is refused | *(off)* |
+| Subagent finished | | *(off)* |
+| Session ended | | *(off)* |
+
+Of the five ways a session can start, only **Context compacted** is on:
+compaction happens without asking, takes a while, and the session that
+comes back has forgotten things. The other four you already know about,
+because you caused them.
+
+Screens never stack, and the noisy events get a cooldown on top of that —
+an agent that has got something wrong tends to get it wrong twenty times
+in a row, and the twentieth banner says nothing the first one did. A
+screen you ask for by hand is never held back.
+
+`ai-souls status` prints the list as your install actually has it.
+
+## Making it yours
+
+Out of the box every headline is just the event's name — "Tool call
+failed", "Commit made". **YOU DIED** is a much better joke when you chose
+it, so write your own in the settings window. Whatever you type gets
+SHOUTED on screen.
+
+Per event: the headline and subtitle, a colour (death, bonfire, victory,
+soul, hollow, covenant), a sound (gong, choir, chime, ember, thud, you
+died, or silence), the volume, and how long it stays up.
+
+A screen lasts as long as its own sound, so nothing gets cut off
+mid-ring. Sounds start at 20% — these arrive while you are concentrating,
+so the first one should be an accent, not a jump scare.
+
+Changes save themselves. Only arming or disarming an event needs **Write
+hooks** afterwards, since that is what changes the hooks on disk.
+
 ## The command
 
 ```
-ai-souls <message>         put a headline on screen
-ai-souls settings          open the settings window
-ai-souls install [agent]   write the enabled hooks into the agent's settings
-ai-souls uninstall [agent] remove every AI Souls hook
-ai-souls status            show paths and the current per-event settings
-ai-souls events            list the event keys
-ai-souls fire <event>      show a catalog event's screen (this is what hooks run)
+ai-souls <message>       put a headline on screen
+ai-souls settings        open the settings window
+ai-souls install         write the enabled hooks into Claude Code
+ai-souls uninstall       remove every AI Souls hook
+ai-souls status          show paths and per-event settings
+ai-souls fire <event>    show one event's screen (this is what hooks run)
 ```
 
-`agent` is optional and defaults to `claude`, the only one supported
-today. It exists so that adding a second one does not change the shape
-of the command line.
-
-Prefix any of them with `npx` if you did not install globally. That is a
-real install doing real work — `npx ai-souls install` is the
-recommended way in — but it pays npm's resolution cost every time, so
-the verbs you reach for often are worth a global install. See
-[Why hooks run a copy](#why-hooks-run-a-copy) for why an npx install
-outlives its own cache.
-
-Anything that is not a verb is a headline, so quoting is optional and
-`--` forces the issue:
+Anything that is not a verb is a headline, so quoting is optional:
 
 ```bash
 ai-souls PRAISE THE SUN --style victory --sound choir
-```
-
-```bash
-ai-souls -- status
 ```
 
 | Option | |
@@ -118,413 +118,43 @@ ai-souls -- status
 | `--volume <0-100>` | |
 | `--duration <ms>` | 600 to 10000 |
 | `--subtitle <text>` | |
+| `--` | everything after this is the message |
 
-## How it works
+Prefix any of them with `npx`, or `npm install -g ai-souls` if you would
+rather have the command itself — the hooks do not need it, but it saves
+npm's resolution cost every time you type one.
 
-**A screen is a process.** Nothing stays resident: no daemon, no tray
-icon, no trigger file, no heartbeat. Between banners, AI Souls is not
-running.
+## Your settings.json is safe
 
-| Invocation | What it does |
-| --- | --- |
-| `ai-souls fire <event>` | resolves the event, draws its banner, exits — this is what hooks run |
-| `ai-souls "..."` | the same, for a headline you typed |
-| `ai-souls settings` | opens the settings window; closing it ends the process |
-| `ai-souls install` | merges the enabled hooks into `~/.claude/settings.json` |
+`install` parses `~/.claude/settings.json` and writes back only its own
+entries. Other hooks, unrelated settings and key order are carried
+through untouched, and the original is backed up once to
+`settings.json.ai-souls-backup` before the first write.
 
-A hook's `fire` reads the config, and if that event is switched off it
-exits before touching a window system at all. If it is on, the process
-becomes the banner, holds it for its duration, and quits with it.
-Measured on Windows from a completely dead start, four runs: **visible
-at 269–458 ms, median 295 ms.**
+AI Souls recognises its own entries by shape, so `uninstall` never
+touches a hook it did not write. Installing twice is a no-op.
 
-This replaced a resident app that held an always-open transparent window
-and polled a trigger file five times a second. That design was built on
-the belief that revealing a canvas window costs ~2.5 s, so it had to be
-paid once at startup. It does not: the host reveals a canvas window on
-its first present, and the deferred-show deadline behind that number is
-a 1 s safety net for windows that never present. Measured with the
-window created on demand, five runs: **visible at 191–318 ms, median
-275 ms** — the deadline is never reached.
-
-The resident process cost **~3.5% of a core, continuously, forever**,
-almost all of it the poll loop rather than the window. It also meant
-that after a reboot nothing was listening and hooks fired into a void
-until you happened to start the app by hand. Both problems are gone
-because the thing that had them is gone.
-
-## Why hooks run a copy
-
-A hook names its command by absolute path, and every path a package
-manager hands out is temporary in some way. npm's global prefix is
-versioned, so an upgrade moves the binary. npx is worse: it unpacks into
-a cache directory npm deletes on its own schedule, and it does not
-consult a global install either — `npx --no-install ai-souls` fails with
-"could not determine executable to run" even with the global shim on
-PATH.
-
-Neither failure would say anything. Our hooks are `async` with a five
-second timeout, so Claude Code swallows the error and the screens just
-stop appearing one day.
-
-So `install` copies the binary and the sounds into `~/.ai-souls/bin` and
-points the hooks there. That path is ours: it survives an upgrade, an
-`npm uninstall -g`, and an npx cache being collected ten minutes later.
-The copy is a whole working install rather than a launcher, so it keeps
-working alone. `uninstall` takes it away again.
-
-The alternative — making the hook itself say `npx ai-souls fire …` —
-costs too much to be on this path. Measured on the same machine, median
-of seven runs:
-
-| hook command | median |
-| --- | --- |
-| absolute path to the binary | **2 ms** |
-| `ai-souls` through the npm PATH shim | 187 ms |
-| `npx ai-souls`, package already in local `node_modules` | 695 ms |
-
-That is the best case for npx; the usual one adds a registry round trip,
-which fails offline and can outrun the hook timeout. It would also mean
-every `SessionStart` running whatever the registry currently serves under
-that name, which is a lot of standing trust for a banner.
-
-Re-running `install` refreshes the copy. If a running app is holding the
-old one open — Windows will not replace a live image — the install still
-succeeds against the existing copy and says so, rather than leaving you
-to wonder which build is answering.
-
-## Building it yourself
-
-```bash
-npm install -g @native-sdk/cli
-```
-
-```bash
-native build          # zig-out/bin/ai-souls
-node tools/package-npm.mjs   # dist/npm, ready for `npm pack`
-```
-
-The npm package is a single tarball carrying one binary per platform
-under `vendor/<platform>-<arch>/`, with a Node launcher that picks one
-and execs it. Two slots ship today:
-
-| Slot | Built on | |
-| --- | --- | --- |
-| `win32-x64` | `windows-latest` | `x86_64-windows-gnu` |
-| `darwin-universal` | `macos-14` | `arm64` + `x86_64`, fused with `lipo` |
-
-macOS is one universal binary rather than two arch slots, so the
-launcher looks for `darwin-universal` when there is no slot for the
-exact arch. A platform with no binary at all gets a clear error from the
-launcher rather than a mystery.
-
-Only `win32-x64` can be built on a Windows machine — the macOS target
-needs Apple's SDK. CI builds both on their own runners and stages them
-into one package.
-
-CI names its targets explicitly instead of building for the host. A
-native build compiles for the runner's *detected CPU features*, so a
-binary built on a machine with AVX-512 can crash on one without it.
-
-## Releasing
-
-Changelogs and versions are managed by
-[Tegami](https://tegami.fuma-nama.dev). Nothing about a release is typed
-by hand except the description of what changed.
-
-Write that description in the same commit as the change:
-
-```bash
-bun run tegami
-```
-
-It writes a `.tegami/*.md` file naming the bump type and what a user
-would notice. From there:
-
-| | |
-| --- | --- |
-| **`ci.yml`** — push, PR | `native check`, `native test`, `native build` on Windows and macOS. Keeps each binary as a 14-day artifact, so the macOS build nobody here can compile is always one download away. |
-| **`version.yml`** — push to `main` | `tegami ci` turns pending changelogs into a **Version Packages** PR: bumped `npm/package.json` + `app.zon`, and `CHANGELOG.md`. Merging it pushes a `v<version>` tag and starts the release. |
-| **`release.yml`** — dispatched, or a `v*` tag pushed by hand | Builds both slots, fuses the macOS one, packs the tarball, and drafts a GitHub release with the changelog as its notes and the binaries attached. |
-
-So the decision a human makes is **merging the Version Packages PR**.
-
-### Why the tag does not start the release by itself
-
-Anything `GITHUB_TOKEN` pushes is invisible to `on: push`. That is how
-GitHub stops a workflow from triggering itself forever, and it is not
-optional. It cost this repo its v0.1.0 release: `version.yml` pushed the
-tag, said `release.yml takes it from here`, and nothing built.
-
-`workflow_dispatch` is the one documented exception, so the tag job asks
-for the run by name — against the tag, because every job in `release.yml`
-gates on `startsWith(github.ref, 'refs/tags/v')`. If it ever fails, the
-tag is already pushed and one command finishes the job:
-
-```bash
-gh workflow run release.yml --ref v0.2.0
-```
-
-The same rule is why the Version Packages PR gets no CI of its own.
-`main` is protected against force-pushes and deletion but does not
-require status checks, so the PR merges normally. Giving Tegami a
-personal access token instead of `github.token` would fix both at once.
-
-Two things stay deliberately manual:
-
-- **The GitHub release is a draft.** The assets are persisted and the
-  notes are written; publishing it is a click.
-- **npm publishing is on**, via
-  [trusted publishing](https://docs.npmjs.com/trusted-publishers) —
-  OIDC against `release.yml`, no `NPM_TOKEN` anywhere. The
-  `NPM_PUBLISH` repository variable gates it, so there is a switch to
-  flip that is not a revert. Set it to anything but `true` and a tag
-  still builds and drafts; it just does not reach the registry.
-
-### Why the version lives in two files
-
-`npm/package.json` is the version of record, because it is the file
-Tegami bumps. `app.zon` carries the same number because the Native SDK
-reads it. `tools/sync-version.mjs` copies one to the other from Tegami's
-`applyCliDraft` hook, CI checks they agree, and the packager refuses to
-stage a package where they don't.
-
-`npm/package.json` is also marked `"private": true`, which is what stops
-Tegami from publishing it: the real package does not exist as a
-directory in this repo, it is assembled into `dist/npm` out of binaries
-from two runners. The packager drops the flag when it stages the public
-copy.
-
-Upgrading moves the binary, but the hooks name a copy under
-`~/.ai-souls/bin` rather than the package, so they keep working — see
-[Why hooks run a copy](#why-hooks-run-a-copy). Re-run `ai-souls install`
-after an upgrade to bring that copy up to date.
-
-## The catalog
-
-| Event | Fires on | |
-| --- | --- | --- |
-| Session started | `SessionStart` + `startup` | *(off)* |
-| Session resumed | `SessionStart` + `resume` | *(off)* |
-| Session cleared | `SessionStart` + `clear` | *(off)* |
-| Session forked | `SessionStart` + `fork` | *(off)* |
-| Compacting context | `PreCompact` | *(off)* |
-| Context compacted | `SessionStart` + `compact` | |
-| Turn completed | `Stop` | |
-| Question asked | `Notification` | max 1 / 10s |
-| Tool call failed | `PostToolUseFailure` | max 1 / 30s |
-| Rate limited | `StopFailure` + `rate_limit\|overloaded` | max 1 / 60s |
-| API error | `StopFailure` + auth / billing / server faults | max 1 / 30s |
-| PR created | `PostToolUse` + `Bash(gh pr create:*)` | |
-| Commit made | `PostToolUse` + `Bash(git commit:*)` | |
-| Permission denied | `PermissionDenied` | *(off)* |
-| Subagent finished | `SubagentStop` | *(off)* |
-| Session ended | `SessionEnd` | *(off)* |
-
-`ai-souls status` prints this table as your install actually has it.
-
-`SessionStart` fires for five different reasons and says which in its
-`source`, so each one is its own row. Only **Context compacted** is
-armed out of the box: compaction happens without asking, takes a while,
-and the session that comes back has forgotten things — the other four
-you already know about, because you caused them.
-
-The two `StopFailure` rows are the ones you cannot get any other way.
-That hook fires when a turn ends on an API error and its matcher is the
-`error_type`, so "you are rate limited" and "something is actually
-broken" can be two different screens.
-
-### Throttling
-
-No screen ever draws over one that is still up, and the events that
-arrive in bursts have a window of their own on top of that — an agent
-that has got something wrong tends to get it wrong twenty times in a
-row, and the twentieth screen says nothing the first one did not.
-
-The record lives in `~/.ai-souls/fired.txt`, because with no resident
-process there is nowhere else to keep it. Windows are per event, so a
-storm of tool failures never swallows the API error that follows it. A
-screen you ask for by hand — `ai-souls "YOU DIED"` — is never held back.
-
-Everything about the bar is a multiple of the headline size, so it
-keeps its proportions on any display: the bar is 2.5x the type, and the
-top and bottom quarter-of-a-headline of it fade out rather than ending
-on a line.
-
-Per event you can set the headline and subtitle, the colour style
-(death / bonfire / victory / soul / hollow / covenant), the sound
-(gong / choir / chime / ember / thud / you died, or silence — a death
-screen starts out sounding like one),
-the volume, and how long it stays up. A screen starts out as long as
-its own sound, because the overlay stops the audio when it ends — the
-You Died sting runs 7.2 seconds, so a death screen does too. A shorter
-sound does not shorten the screen below the 2.6 seconds it takes to
-read one. Sounds start at 20% — these arrive unannounced while you are
-concentrating, so the first one is an accent rather than a jump scare. Changes save themselves; only arming
-or disarming an event needs **Write hooks** afterwards, because that is
-what changes the hook set on disk.
-
-## About your settings.json
-
-`ai-souls install` parses `~/.claude/settings.json` as JSON and writes
-back only its own entries. Everything else — other hooks, unrelated
-settings, key order — is carried through untouched, and the original is
-backed up once to `settings.json.ai-souls-backup` before the first
-write. Our own entries are recognised by shape (a `command` hook running
-this binary with `fire <event>`), so `ai-souls uninstall` never touches
-a hook it did not write. Installing twice is a no-op.
-
-## Sounds
-
-Gong, Choir, Chime, Ember and Thud are synthesized from scratch by
-`tools/make-sounds.mjs` — a few oscillators and envelopes each, no
-samples. Regenerate them with:
-
-```bash
-node tools/make-sounds.mjs
-```
-
-(ffmpeg on PATH does the mp3 encode. mp3 is the one format all three
-platform audio backends decode.)
-
-"You Died" is the exception: it is a supplied recording, not something
-this repo generates, and at seven seconds it is far longer than a
-screen's default 2.6 s — raise that event's duration if you want to hear
-the whole thing. To add your own, drop an mp3 in `assets/sounds/` and
-append it to the `Sound` enum in `src/souls.zig`. Append, never reorder:
-those numbers are what `config.txt` stores.
-
-## Files
+Nothing stays running between banners. No daemon, no tray icon, no
+polling — each screen is its own short-lived process, and a banner
+appears about 300 ms after the hook fires.
 
 | Path | |
 | --- | --- |
-| `~/.ai-souls/config.txt` | per-event settings |
-| `~/.ai-souls/bin/` | the copy installed hooks run, and its sounds |
-| `~/.claude/settings.json` | where the hooks are installed |
-| `~/.claude-souls/config.txt` | a pre-rename install, read once and left alone |
+| `~/.ai-souls/config.txt` | your settings |
+| `~/.ai-souls/bin/` | the copy the hooks run, and its sounds |
+| `~/.claude/settings.json` | where the hooks live |
 
-## Development
+## Credits
 
-```bash
-native dev      # run with hot reload
-native test     # the test suite
-native check    # validate app.zon
-native build    # ReleaseFast binary
-native package  # platform bundle
-```
+Set in [EB Garamond](https://github.com/octaviopardo/EBGaramond12) (SIL
+Open Font License), embedded in the binary so the screen is the same face
+everywhere. The sounds are synthesized from a handful of oscillators —
+no samples, nothing lifted from any game.
 
-```bash
-node tools/package-npm.mjs   # stage dist/npm from the last build
-```
+Built with [Vercel's Native SDK](https://github.com/vercel-labs/native):
+declarative native views in Zig, no browser, no WebView, one binary.
 
-The architecture in one paragraph: `src/souls.zig` is the comptime
-catalog, `src/config.zig` an allocation-free codec (so `update` can
-parse and serialize without an allocator), `src/app.zig` the whole
-Model/Msg/update, `src/views.zig` both windows' widget trees,
-`src/hooks.zig` the JSON merge, and `src/cli.zig` the non-GUI verbs.
-`update` never reads the clock, the environment, or the filesystem
-directly — paths and the display size are resolved in `main` and carried
-in the model, and everything else goes through the effects channel.
+Developed on Windows 11. macOS builds and passes its tests in CI, but
+nobody has watched a banner appear there yet.
 
-## Platform notes
-
-Developed and verified on Windows 11. macOS uses the same code paths
-(`NSFloatingWindowLevel`, `ignoresMouseEvents`, a clear window
-background) and is expected to work. CI compiles it and runs the suite
-on a macOS runner, so it is known to build and known to pass its tests —
-but nobody has watched a banner appear there.
-
-A few things worth knowing:
-
-- **A canvas window reveals on its first present, not on a timer.** This
-  was long believed to cost ~2.5 s on the Win32 host, and the permanent
-  overlay window — and the resident process that held it — existed to
-  pay it once. The number was wrong. The host shows a canvas window from
-  `showWindowImplicit` on its first successful present; the deferred-show
-  deadline is a safety net for windows that never present, and it is
-  `kDeferredShowDeadlineMs = 1000`, never reached in practice. Measured
-  on SDK 0.8.1, five runs, window created on demand: visible at 191–318
-  ms, median 275 ms. Worth re-measuring on macOS, which has its own show
-  policy.
-- **The overlay window is only as tall as the banner**, not as tall as
-  the screen, and this is the entire framerate budget. A transparent
-  top-level window cannot use the Direct2D path — `UpdateLayeredWindow`
-  replaces the whole top-level image and cannot compose child HWNDs —
-  so every frame is rasterized on the CPU and the cost tracks the
-  window's area. Measured on a 4K/150% display:
-
-  | overlay window | animation |
-  | --- | --- |
-  | full screen (1440pt) | 6 fps |
-  | 320pt band | 16 fps |
-  | **240pt band** (shipping) | **21 fps** |
-  | 240pt band, opaque | 28 fps |
-
-  Asking the animation timer for a shorter interval does not help and
-  slightly hurts: effect timers arrive as `WM_TIMER`, the lowest-
-  priority Win32 message, so a busy frame loop starves them regardless.
-  4ms measured 20 fps against 16ms's 21. `timeBeginPeriod(1)` landed
-  inside the noise and was dropped.
-- **Starting a sound freezes the message loop for two seconds**, and
-  there is nothing the app can do about it: `playAudio` reaches a host
-  that builds a Media Foundation session, topology and audio renderer
-  synchronously on the loop thread. Measured as the largest gap between
-  two animation frames, three screens each:
-
-  | | frames in 2.6s | largest gap |
-  | --- | --- | --- |
-  | silent | 59-61 | 60-66 ms |
-  | with a sound | 44-52, bunched | **2029-2068 ms** |
-
-  It is a flat cost, not a decode cost: 0.9s/15KB and 7.1s/112KB files
-  both pay 2.03s, and the second and third plays pay it again. Two
-  things follow from it.
-
-  The sound starts *after* the fade-in rather than with it, so the
-  freeze cannot land on the one animation the user is watching for. And
-  `advanceOverlay` refuses to count the part of a freeze that would
-  otherwise skip the fade-out — a screen frozen through its hold was
-  holding anyway, but one that comes back from the freeze already past
-  its own ending vanishes without ever fading, which is exactly what it
-  used to do. Only the overshoot is given back, so a 2.6s screen runs
-  about 3.0s rather than the 4.6s that forgiving the whole freeze would
-  cost. A machine that does not freeze pays none of this.
-- **The bar's soft edges are stacked strips, and they must be plain
-  layout boxes.** There is no gradient fill for widget backgrounds, and
-  the `chrome` builder that does have one is main-canvas only. Built out
-  of `.panel` each strip draws that widget's border, and 48 hairlines
-  through the fade turn the gradient into a flat lighter block.
-- **A screen process hides the settings window with a raw `SW_HIDE`,**
-  not with the SDK's `closeWindow`. The shell window is declared in
-  `app.zon` and therefore always created, but a banner must not open a
-  settings window over itself. `closeWindow` is not the answer: the
-  Win32 host documents that runtime-initiated closes bypass the
-  `close_policy` hook and really destroy the window — measured as
-  `window_closed` followed immediately by `stop`, which would end the
-  process mid-banner.
-- **Release builds pass `-Dtrace=off`.** The SDK's trace default is
-  `events`, and now that `fire` boots the runtime in the foreground that
-  chatter goes straight to the hook's stdout. With it off, a fire prints
-  nothing at all.
-- **`AI_SOULS_OPAQUE=1`** runs the overlay as a solid window: the
-  band stops being see-through, and in exchange it regains the Direct2D
-  path and runs noticeably smoother. It is also the fallback for
-  remote-desktop and compositor setups that cannot present a layered
-  window at all, where a solid banner beats an invisible one.
-- **Two things about the overlay window are fixed from Win32 directly**
-  (`src/overlay_style.zig`), because the SDK's `WindowDescriptor` cannot
-  express them. It is a borderless top-level window — `WS_POPUP` with no
-  owner — which the shell would otherwise give a taskbar button and an
-  Alt+Tab entry, so `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE` are set on
-  it. And the descriptor's `x`/`y` are never applied: the Win32 host
-  passes `CW_USEDEFAULT` to `CreateWindowExW`, which parks the bar at
-  the top of the screen, so it is moved to the middle afterwards.
-- **`native automate snapshot` is not trustworthy here.** It served a
-  cached snapshot from a long-dead process throughout development —
-  check `publisher_pid` against a live process before believing it.
-- **Screenshotting the overlay needs `CAPTUREBLT`.** It is a layered
-  window, and a plain `BitBlt`/`CopyFromScreen` of the desktop silently
-  omits those — it returns a perfectly good screenshot with no banner in
-  it. Any capture tool must also be per-monitor DPI aware, or Windows
-  virtualizes its coordinates and window rects and the numbers quietly
-  disagree with the app's.
+Hacking on it? See [CONTRIBUTING.md](CONTRIBUTING.md).

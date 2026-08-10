@@ -116,7 +116,7 @@ The rest is automatic: `version.yml` opens a Version Packages PR, merging it
 tags `v<version>` and dispatches `release.yml`, which builds both platforms
 and drafts the release. That dispatch is load-bearing — a tag pushed with
 `GITHUB_TOKEN` never fires `on: push`, so nothing would build without it.
-See the README's release section for the parts that still need hands.
+See CONTRIBUTING.md's release section for the parts that still need hands.
 
 ## Coding conventions
 
@@ -137,5 +137,9 @@ See the README's release section for the parts that still need hands.
 ## Documentation
 
 When changing user-facing behaviour, update the docs in the same change:
-README.md, this file, and the `--help` text in `src/cli.zig`. Documentation must
-not go stale.
+README.md, CONTRIBUTING.md, this file, and the `--help` text in
+`src/cli.zig`. Documentation must not go stale.
+
+README.md is for someone deciding whether to install it and living with it
+afterwards — no internals, no measurements, no workflow names. Everything a
+contributor needs goes in CONTRIBUTING.md.

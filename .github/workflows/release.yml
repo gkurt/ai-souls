@@ -21,8 +21,8 @@
 #
 # The npm publish is off until the `NPM_PUBLISH` repository variable is
 # `true`, because it needs one-time trusted-publishing setup on npmjs.com
-# first (see the README). Until then a tag builds and drafts, and the
-# publish job skips with a note.
+# first (see CONTRIBUTING.md). Until then a tag builds and drafts, and
+# the publish job skips with a note.
 
 name: release
 
