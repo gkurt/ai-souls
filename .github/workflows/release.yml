@@ -320,9 +320,16 @@ jobs:
 
       # Gated by a repository variable rather than wired straight in, so
       # there is a switch to reach for that is not "revert a commit".
+      #
+      # The leading `./` is load-bearing. npm's spec parser reads a bare
+      # `tarball/ai-souls-0.2.0.tgz` as the GitHub shorthand
+      # `owner/repo` and goes off to `git ls-remote
+      # ssh://git@github.com/tarball/ai-souls-0.2.0.tgz.git`, which is
+      # how the v0.2.0 publish failed. A path that starts with `./` is
+      # unambiguously a path.
       - name: Publish
         if: vars.NPM_PUBLISH == 'true'
-        run: npm publish tarball/*.tgz --access public
+        run: npm publish ./tarball/*.tgz --access public
 
       - name: Explain the skip
         if: vars.NPM_PUBLISH != 'true'
