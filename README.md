@@ -52,13 +52,13 @@ On out of the box:
 | Commit made | `git commit` succeeds |
 | Turn completed | Claude stops replying |
 | Question asked | a permission prompt or a nudge |
-| Tool call failed | any failed tool call |
 | API error | auth, billing, a server fault |
 | Rate limited | the API tells you to wait |
 | Context compacted | compaction finishes |
 
-Off, and a switch away: compaction starting, permission denied, a
-subagent finishing, and the ways a session begins and ends.
+Off, and a switch away: a failed tool call, compaction starting,
+permission denied, a subagent finishing, and the ways a session begins
+and ends.
 
 Screens never stack, and the noisy ones are rate-limited — twenty
 failures out of one retry loop cost you one banner, not twenty. When two
@@ -68,10 +68,10 @@ land at once the more important one wins.
 
 ## Making it yours
 
-Out of the box every headline is just the event's name — "Tool call
-failed", "Commit made". **YOU DIED** is a much better joke when you chose
-it, so write your own in the settings window. Whatever you type gets
-SHOUTED on screen.
+Out of the box every headline is just the event's name — "Turn
+completed", "Commit made". **YOU DIED** is a much better joke when you
+chose it, so write your own in the settings window. Whatever you type
+gets SHOUTED on screen.
 
 Per event: the headline and subtitle, a colour (death, bonfire, victory,
 soul, hollow, covenant), a sound (gong, choir, chime, ember, thud, you

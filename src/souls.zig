@@ -371,7 +371,11 @@ pub const events = [_]Event{
         .default_title = "Tool call failed",
         .default_style = .death,
         .default_sound = .you_died,
-        .default_enabled = true,
+        // Off, for the same reason it is ranked and throttled the way it
+        // is: a failed tool call is usually a step in a working run, not
+        // news. Even one screen per thirty seconds is a screen for
+        // something the agent already handled.
+        .default_enabled = false,
     },
     .{
         .key = "rate_limited",
@@ -583,6 +587,24 @@ test "every way a session can start is its own row" {
     for (events) |event| {
         if (!std.mem.eql(u8, event.hook_event, "SessionStart")) continue;
         const armed = std.mem.eql(u8, event.key, "compaction_done");
+        try std.testing.expectEqual(armed, event.default_enabled);
+    }
+}
+
+test "what is armed out of the box is news you could not have seen coming" {
+    // A default that fires is a screen someone did not ask for, so each
+    // one has to earn it. The line this draws: something happened that
+    // you would want to know about and could not have predicted. A
+    // failed tool call is not that — the agent tries something else and
+    // carries on — which is why it ships off despite being loud.
+    for (events) |event| {
+        const armed = std.mem.eql(u8, event.key, "pr_created") or
+            std.mem.eql(u8, event.key, "commit_made") or
+            std.mem.eql(u8, event.key, "turn_complete") or
+            std.mem.eql(u8, event.key, "question_asked") or
+            std.mem.eql(u8, event.key, "api_error") or
+            std.mem.eql(u8, event.key, "rate_limited") or
+            std.mem.eql(u8, event.key, "compaction_done");
         try std.testing.expectEqual(armed, event.default_enabled);
     }
 }

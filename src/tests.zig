@@ -54,13 +54,13 @@ test "fire resolves an armed event into the screen it will draw" {
     const outcome = cli.run(
         testing.allocator,
         testing.io,
-        &.{ "ai-souls", "fire", "tool_failed" },
+        &.{ "ai-souls", "fire", "api_error" },
         &paths,
     );
 
     // No config file on disk, so this is the compiled default for the
     // row — which is exactly what the hook should put on screen.
-    const expected = config_mod.Config.default().events[souls.indexOfKey("tool_failed").?];
+    const expected = config_mod.Config.default().events[souls.indexOfKey("api_error").?];
     switch (outcome) {
         .run_screen => |entry| {
             try testing.expectEqualStrings(expected.title.slice(), entry.title.slice());
@@ -89,7 +89,9 @@ test "the same hook twice in a row draws one screen" {
         return error.PathTooLong;
     paths.fired.set(paths_mod.join(&file_buffer, dir, "fired.txt"));
 
-    const hook = &.{ "ai-souls", "fire", "tool_failed" };
+    // An armed row with a window of its own, so the second call is
+    // refused by that window rather than by the absolute floor.
+    const hook = &.{ "ai-souls", "fire", "api_error" };
     try testing.expect(cli.run(testing.allocator, testing.io, hook, &paths) == .run_screen);
 
     // `handled_ok`, not a failure: the hook did its job, it just had

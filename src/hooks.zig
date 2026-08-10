@@ -427,7 +427,9 @@ test "a disabled event has no hook after install" {
 
     const rendered = try renderApplied(arena, "{}", &config);
     try testing.expect(std.mem.indexOf(u8, rendered, "\"turn_complete\"") == null);
-    try testing.expect(std.mem.indexOf(u8, rendered, "\"tool_failed\"") != null);
+    // Its neighbours are untouched — the one we turned off is the only
+    // one missing.
+    try testing.expect(std.mem.indexOf(u8, rendered, "\"api_error\"") != null);
 }
 
 test "the five ways a session starts install as five matcher groups" {
