@@ -113,8 +113,10 @@ commands. `scripts/tegami.mts` puts the identity back afterwards, so setting
 other way, check `git config --local --get-regexp '^user\.'` before committing.
 
 The rest is automatic: `version.yml` opens a Version Packages PR, merging it
-tags `v<version>`, and `release.yml` builds both platforms and drafts the
-release. See the README's release section for the parts that still need hands.
+tags `v<version>` and dispatches `release.yml`, which builds both platforms
+and drafts the release. That dispatch is load-bearing — a tag pushed with
+`GITHUB_TOKEN` never fires `on: push`, so nothing would build without it.
+See the README's release section for the parts that still need hands.
 
 ## Coding conventions
 

@@ -7,9 +7,14 @@
 # has a win32-x64 slot and nothing else, and the launcher says so
 # plainly on any other platform.
 #
-# A `v*` tag starts it, and `version.yml` pushes that tag when a Version
-# Packages PR merges — so the human decision is reviewing and merging the
-# PR, not running anything by hand. `ci.yml` covers ordinary pushes.
+# `version.yml` starts it: when a Version Packages PR merges, that
+# workflow pushes the `v*` tag and then dispatches this one against it.
+# The dispatch is not belt-and-braces — a tag pushed with GITHUB_TOKEN
+# never fires `on: push`, so without it nothing here would ever run
+# automatically. The human decision is merging the PR.
+#
+# The `push: tags` trigger below is still worth having: it catches a tag
+# pushed by a person. `ci.yml` covers ordinary pushes.
 #
 # The GitHub release is left as a DRAFT: the assets are persisted and the
 # notes are written, and a person decides whether the world sees it.

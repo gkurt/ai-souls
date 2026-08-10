@@ -5,8 +5,9 @@
 #   1. `tegami ci` sees `.tegami/*.md` and opens a Version Packages PR
 #      that bumps `npm/package.json` + `app.zon` and writes CHANGELOG.md.
 #   2. Merging that PR lands a new version on main, and the tag job below
-#      pushes `v<version>` — which is what starts `release.yml`, the only
-#      workflow with the binaries.
+#      pushes `v<version>` and then dispatches `release.yml`, the only
+#      workflow with the binaries. It has to ask explicitly — see the
+#      comment on that step.
 #
 # Tegami does not publish anything here. The npm package does not exist
 # as a directory in this repo; it is assembled from binaries built on two
@@ -50,7 +51,8 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # push the tag
+      actions: write # and then ask release.yml to run on it
     steps:
       - uses: actions/checkout@v6
         with:
@@ -60,6 +62,7 @@ jobs:
       # nothing at all unless the version on main is one we have never
       # tagged. That happens exactly when a Version Packages PR merges.
       - name: Tag if the version is new
+        id: tag
         run: |
           set -euo pipefail
           version=$(node -p "require('./npm/package.json').version")
@@ -72,4 +75,36 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${tag}" -m "${tag}"
           git push origin "${tag}"
-          echo "pushed ${tag} — release.yml takes it from here"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "pushed ${tag}"
+
+      # The tag above does NOT start release.yml on its own. Anything
+      # pushed with GITHUB_TOKEN is invisible to `on: push`, which is how
+      # GitHub stops a workflow triggering itself forever — the same rule
+      # that leaves the Version Packages PR without CI. It cost us the
+      # v0.1.0 release: the tag landed and nothing built.
+      #
+      # `workflow_dispatch` is the one documented exception to that rule,
+      # so we ask for the run by name. Dispatching against the TAG and
+      # not a branch is what matters: every job in release.yml gates on
+      # `startsWith(github.ref, 'refs/tags/v')`.
+      - name: Start the release
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The ref can take a moment to be visible to the API after a
+          # push, and a release that silently did not happen is the
+          # failure mode this whole step exists to prevent.
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run release.yml --ref "$TAG"; then
+              echo "release.yml dispatched against ${TAG}"
+              exit 0
+            fi
+            echo "attempt ${attempt} failed; the tag may not be visible yet"
+            sleep 5
+          done
+          echo "::error::could not start release.yml — run: gh workflow run release.yml --ref ${TAG}"
+          exit 1

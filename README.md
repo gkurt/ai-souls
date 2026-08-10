@@ -244,17 +244,31 @@ would notice. From there:
 | | |
 | --- | --- |
 | **`ci.yml`** — push, PR | `native check`, `native test`, `native build` on Windows and macOS. Keeps each binary as a 14-day artifact, so the macOS build nobody here can compile is always one download away. |
-| **`version.yml`** — push to `main` | `tegami ci` turns pending changelogs into a **Version Packages** PR: bumped `npm/package.json` + `app.zon`, and `CHANGELOG.md`. Merging it pushes a `v<version>` tag. |
-| **`release.yml`** — `v*` tag | Builds both slots, fuses the macOS one, packs the tarball, and drafts a GitHub release with the changelog as its notes and the binaries attached. |
+| **`version.yml`** — push to `main` | `tegami ci` turns pending changelogs into a **Version Packages** PR: bumped `npm/package.json` + `app.zon`, and `CHANGELOG.md`. Merging it pushes a `v<version>` tag and starts the release. |
+| **`release.yml`** — dispatched, or a `v*` tag pushed by hand | Builds both slots, fuses the macOS one, packs the tarball, and drafts a GitHub release with the changelog as its notes and the binaries attached. |
 
 So the decision a human makes is **merging the Version Packages PR**.
 
-That PR gets no CI of its own: GitHub does not trigger workflows for
-pull requests created with `GITHUB_TOKEN`, which is how it avoids
-workflow loops. `main` is protected against force-pushes and deletion
-but does not require status checks, so the PR merges normally. Giving
-Tegami a personal access token instead of `github.token` would make the
-PR run checks like any other.
+### Why the tag does not start the release by itself
+
+Anything `GITHUB_TOKEN` pushes is invisible to `on: push`. That is how
+GitHub stops a workflow from triggering itself forever, and it is not
+optional. It cost this repo its v0.1.0 release: `version.yml` pushed the
+tag, said `release.yml takes it from here`, and nothing built.
+
+`workflow_dispatch` is the one documented exception, so the tag job asks
+for the run by name — against the tag, because every job in `release.yml`
+gates on `startsWith(github.ref, 'refs/tags/v')`. If it ever fails, the
+tag is already pushed and one command finishes the job:
+
+```bash
+gh workflow run release.yml --ref v0.2.0
+```
+
+The same rule is why the Version Packages PR gets no CI of its own.
+`main` is protected against force-pushes and deletion but does not
+require status checks, so the PR merges normally. Giving Tegami a
+personal access token instead of `github.token` would fix both at once.
 
 Two things stay deliberately manual:
 
