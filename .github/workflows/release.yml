@@ -294,15 +294,27 @@ jobs:
       contents: read
       id-token: write # npm trusted publishing (OIDC) — no NPM_TOKEN
     steps:
+      # Not for building anything — for the npm that comes with it.
+      # Trusted publishing needs npm 11.5.1 or newer to exchange the
+      # OIDC token, and the runner image's default is not a promise.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
       - uses: actions/download-artifact@v4
         with:
           name: npm-tarball
           path: tarball
 
-      # Off by default. npm trusted publishing has to be configured on
-      # npmjs.com against this workflow first, and until it is, a publish
-      # attempt fails in a way that looks like a broken release rather
-      # than a missing setting.
+      - name: Show what is about to publish
+        run: |
+          set -euo pipefail
+          npm --version
+          ls -l tarball/
+
+      # Gated by a repository variable rather than wired straight in, so
+      # there is a switch to reach for that is not "revert a commit".
       - name: Publish
         if: vars.NPM_PUBLISH == 'true'
         run: npm publish tarball/*.tgz --access public
@@ -310,6 +322,5 @@ jobs:
       - name: Explain the skip
         if: vars.NPM_PUBLISH != 'true'
         run: |
-          echo "Set the NPM_PUBLISH repository variable to 'true' to publish."
-          echo "It needs npm trusted publishing configured for this workflow first."
-          echo "The tarball is attached to the draft release either way."
+          echo "NPM_PUBLISH is not 'true', so nothing was published."
+          echo "The tarball is attached to the draft release."

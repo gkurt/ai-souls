@@ -256,12 +256,12 @@ Two things stay deliberately manual:
 
 - **The GitHub release is a draft.** The assets are persisted and the
   notes are written; publishing it is a click.
-- **npm publishing is off** until the `NPM_PUBLISH` repository variable
-  is set to `true`. It needs npm
-  [trusted publishing](https://docs.npmjs.com/trusted-publishers)
-  configured against `release.yml` first — no `NPM_TOKEN`, the workflow
-  already has `id-token: write`. Until then the tarball is only attached
-  to the draft.
+- **npm publishing is on**, via
+  [trusted publishing](https://docs.npmjs.com/trusted-publishers) —
+  OIDC against `release.yml`, no `NPM_TOKEN` anywhere. The
+  `NPM_PUBLISH` repository variable gates it, so there is a switch to
+  flip that is not a revert. Set it to anything but `true` and a tag
+  still builds and drafts; it just does not reach the registry.
 
 ### Why the version lives in two files
 
