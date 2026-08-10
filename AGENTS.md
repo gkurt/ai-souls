@@ -168,6 +168,10 @@ not, it belongs in CONTRIBUTING. Specifically keep out:
 - Platform caveats about which OS a feature works on.
 - Anything about what has or has not been tested. See the memory rule:
   no claims the repo cannot prove.
+- Where the project currently is in its own process — "not on npm yet",
+  "coming in the next release", links to CI runs as a stopgap. The
+  README describes the thing, not the state of shipping it. Anything
+  written to be true only until the next release should not be written.
 
 When a section grows past a screenful, that is the smell. Cut it back
 rather than adding a subheading.

@@ -20,10 +20,6 @@ seconds. You keep typing straight through it.
 
 ## Getting started
 
-> **Not on npm yet.** The first release is on its way. Until then, grab a
-> binary from the
-> [latest CI run](https://github.com/gkurt/ai-souls/actions/workflows/ci.yml).
-
 ```bash
 npx ai-souls install
 ```
