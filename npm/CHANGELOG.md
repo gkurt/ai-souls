@@ -1,3 +1,24 @@
+## ai-souls@0.3.1
+
+### Banners never take the keyboard
+
+A screen used to arrive as an app: it took focus from whatever you were
+typing into, put a tile in the Dock, and turned up in Cmd-Tab. Now a
+banner is only a banner. Your caret stays where you left it.
+
+One trade comes with it: the settings window opens without focus, so
+click it once before you type.
+
+### `install` works on macOS
+
+It used to stop with "No HOME/USERPROFILE in the environment." and write
+nothing, whatever your environment actually said. Your home directory was
+never the problem: the app could not read its own path, and said so in the
+one message it had. Both are fixed — the path resolves, and the two
+failures now read differently if either ever happens again.
+
+`install` also finishes by saying the hooks are ready.
+
 ## ai-souls@0.3.0
 
 ### Every download can be traced back to the build that made it
