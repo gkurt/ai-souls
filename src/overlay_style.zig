@@ -60,6 +60,10 @@ const win = struct {
     extern "user32" fn GetSystemMetrics(index: i32) callconv(.winapi) i32;
     extern "user32" fn SetWindowPos(hwnd: HWND, after: HWND, x: i32, y: i32, cx: i32, cy: i32, flags: u32) callconv(.winapi) BOOL;
     extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+    extern "kernel32" fn OpenProcess(access: u32, inherit: BOOL, pid: u32) callconv(.winapi) ?*anyopaque;
+    extern "kernel32" fn TerminateProcess(process: ?*anyopaque, code: u32) callconv(.winapi) BOOL;
+    extern "kernel32" fn CloseHandle(object: ?*anyopaque) callconv(.winapi) BOOL;
+    const process_terminate: u32 = 0x0001;
     // Zig 0.16 moved sleeping onto the `Io` interface, which this
     // thread has no business holding. Win32 has the primitive.
     extern "kernel32" fn Sleep(milliseconds: u32) callconv(.winapi) void;
@@ -108,6 +112,59 @@ pub fn hideSettings(title: [:0]const u16) void {
             thread.detach();
         },
         else => {},
+    }
+}
+
+/// Whether this platform can take another process's banner down, which
+/// is what makes `Event.priority` mean anything — see `throttle.zig`.
+///
+/// Win32 only, for now. The mechanism below leans entirely on
+/// `FindWindowExW` being able to name a window in someone else's
+/// process; AppKit has no equivalent that does not go through
+/// Accessibility, and macOS has not had a banner watched on it yet.
+/// Where this is false the throttle keeps its absolute floor, so a
+/// screen is missed rather than drawn over another one.
+pub const can_dismiss = builtin.os.tag == .windows;
+
+/// Take down every banner belonging to ANOTHER copy of this app, so the
+/// one about to be drawn has the glass to itself.
+///
+/// Called on the way into a screen process, once, before the window
+/// exists. Whatever is still up at that moment has already lost the
+/// argument — `fire` consulted the throttle first, and the only way it
+/// got this far with a banner standing is that it outranks it.
+///
+/// Synchronous, unlike the two watchers above: the point is for the old
+/// screen to be gone before the new one is revealed ~275ms later, and
+/// three `FindWindowExW` calls do not need a thread.
+///
+/// It terminates rather than closing. The pid comes from a live window
+/// carrying our own private title, so there is no pid-reuse hazard to
+/// worry about, and a `WM_CLOSE` the host chose to ignore would leave
+/// the loser's sound playing under the winner's. Exit code 0: that
+/// process is some hook's `ai-souls fire`, still being waited on by
+/// Claude Code, and its screen being superseded is not a failure.
+pub fn dismissOthers(title: [:0]const u16) void {
+    if (builtin.os.tag != .windows) return;
+
+    const own_pid = win.GetCurrentProcessId();
+    var hwnd: win.HWND = win.FindWindowExW(null, null, null, title.ptr);
+    while (hwnd != null) {
+        // Read the next handle BEFORE the window's process dies: an
+        // enumeration anchored on a destroyed window starts over.
+        const next = win.FindWindowExW(null, hwnd, null, title.ptr);
+        var pid: u32 = 0;
+        _ = win.GetWindowThreadProcessId(hwnd, &pid);
+        if (pid != 0 and pid != own_pid) {
+            // Hidden first, because it is instant and it works even if
+            // this process may not open the other one.
+            _ = win.ShowWindow(hwnd, win.sw_hide);
+            if (win.OpenProcess(win.process_terminate, 0, pid)) |process| {
+                _ = win.TerminateProcess(process, 0);
+                _ = win.CloseHandle(process);
+            }
+        }
+        hwnd = next;
     }
 }
 

@@ -48,20 +48,22 @@ Claude Code is the only agent wired up so far.
 
 ## What fires when
 
+Listed loudest first — see below.
+
 | | Fires on | |
 | --- | --- | --- |
+| PR created | `gh pr create` succeeds | |
+| Question asked | a permission prompt or a nudge | max 1 / 10s |
+| API error | auth, billing, a server fault | max 1 / 30s |
+| Rate limited | the API tells you to wait | max 1 / 60s |
+| Commit made | `git commit` succeeds | |
+| Tool call failed | any failed tool call | max 1 / 30s |
 | Context compacted | compaction finishes | |
 | Turn completed | Claude stops replying | |
-| Question asked | a permission prompt or a nudge | max 1 / 10s |
-| Tool call failed | any failed tool call | max 1 / 30s |
-| Rate limited | the API tells you to wait | max 1 / 60s |
-| API error | auth, billing, a server fault | max 1 / 30s |
-| PR created | `gh pr create` succeeds | |
-| Commit made | `git commit` succeeds | |
-| Session started / resumed / cleared / forked | | *(off)* |
+| Permission denied | a tool call is refused | *(off)*, max 1 / 10s |
+| Subagent finished | | *(off)*, max 1 / 10s |
 | Compacting context | compaction begins | *(off)* |
-| Permission denied | a tool call is refused | *(off)* |
-| Subagent finished | | *(off)* |
+| Session started / resumed / cleared / forked | | *(off)* |
 | Session ended | | *(off)* |
 
 Of the five ways a session can start, only **Context compacted** is on:
@@ -69,12 +71,21 @@ compaction happens without asking, takes a while, and the session that
 comes back has forgotten things. The other four you already know about,
 because you caused them.
 
-Screens never stack, and the noisy events get a cooldown on top of that —
-an agent that has got something wrong tends to get it wrong twenty times
-in a row, and the twentieth banner says nothing the first one did. A
-screen you ask for by hand is never held back.
+Screens never stack. Two of these often land seconds apart — a commit and
+the PR it leads to, a tool failing and the turn ending on it — so they
+are ranked, and the louder one wins. A PR landing while the commit's
+banner is still up replaces it; a turn ending while anything else is on
+screen waits for a quieter moment that never comes. Same rank, no
+interruption.
 
-`ai-souls status` prints the list as your install actually has it.
+On top of that the noisy events get a cooldown, because an agent that has
+got something wrong tends to get it wrong twenty times in a row and the
+twentieth banner says nothing the first one did.
+
+A screen you ask for by hand outranks all of it and is never held back.
+
+`ai-souls status` prints the list as your install actually has it, ranks
+and cooldowns included.
 
 ## Making it yours
 
@@ -87,9 +98,19 @@ Per event: the headline and subtitle, a colour (death, bonfire, victory,
 soul, hollow, covenant), a sound (gong, choir, chime, ember, thud, you
 died, or silence), the volume, and how long it stays up.
 
+Everything ships as the red **YOU DIED** screen, whether or not the event
+is bad news — that is the one screen the game is actually known for, and
+the other five are our guesses at what a bonfire or a covenant banner
+should look like. They are all there to pick; none of them is a default
+until it has been checked against the real thing. Pull the whole catalog
+in five directions if you like.
+
 A screen lasts as long as its own sound, so nothing gets cut off
-mid-ring. Sounds start at 20% — these arrive while you are concentrating,
-so the first one should be an accent, not a jump scare.
+mid-ring. That makes the default seven seconds, which is how long the
+You Died sting runs — drag the duration down per event if that is more
+banner than you wanted. Sounds start at 20%, because these arrive while
+you are concentrating and the first one should be an accent, not a jump
+scare.
 
 Changes save themselves. Only arming or disarming an event needs **Write
 hooks** afterwards, since that is what changes the hooks on disk.

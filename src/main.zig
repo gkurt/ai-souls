@@ -52,8 +52,16 @@ const display_name = "AI Souls";
 /// and, after `overlay_style`, absent from the taskbar and Alt+Tab. It
 /// exists to be DISTINCT from the settings window's title, because that
 /// is how `overlay_style` finds the right HWND.
+///
+/// Two of them, because a settings process ALSO declares an overlay
+/// window — that is what a preview draws into. `dismissOthers` hunts
+/// banners by title, so a banner must be nameable without also naming
+/// the idle overlay sitting inside someone's open settings window. A
+/// hook's screen would otherwise take the settings app down with it.
 const overlay_window_title = "AI Souls Overlay";
 const overlay_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(overlay_window_title);
+const screen_window_title = "AI Souls Screen";
+const screen_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(screen_window_title);
 
 /// The settings window's title, for the same reason: a screen process
 /// finds it by title to put it away. `FindWindowExW` matches the whole
@@ -180,7 +188,8 @@ fn declaredWindows(
     scratch.windows[0] = .{
         .label = app.overlay_window_label,
         .canvas_label = app.overlay_canvas_label,
-        .title = overlay_window_title,
+        // A banner names itself as one, so another banner can find it.
+        .title = if (model.screen_only == null) overlay_window_title else screen_window_title,
         // Declared for the platforms that honour it. The Win32 host
         // passes CW_USEDEFAULT to CreateWindowExW and drops these on
         // the floor, so `overlay_style` re-centres the window there.
@@ -252,14 +261,24 @@ pub fn main(init: std.process.Init) !void {
         .run_screen => |entry| entry,
     };
 
+    if (screen_only != null) {
+        // Getting this far with a banner already up means the throttle
+        // decided this screen outranks it (see `throttle.zig`), so the
+        // incumbent comes down now rather than being drawn over. First,
+        // because the glass should be clear before ours is revealed.
+        overlay_style.dismissOthers(screen_window_title_w);
+        // This process exists to draw one banner. The settings window
+        // is still the shell window the SDK insists on, so it is pushed
+        // out of sight rather than opening over the very screen we were
+        // asked for.
+        overlay_style.hideSettings(settings_window_title_w);
+    }
     // The overlay window does not exist yet — this waits for it, then
     // fixes the two things the descriptor cannot express. See
     // `overlay_style` for why neither can be done declaratively.
-    overlay_style.adopt(overlay_window_title_w);
-    // This process exists to draw one banner. The settings window is
-    // still the shell window the SDK insists on, so it is pushed out of
-    // sight rather than opening over the very screen we were asked for.
-    if (screen_only != null) overlay_style.hideSettings(settings_window_title_w);
+    const banner_title_w: [:0]const u16 =
+        if (screen_only == null) overlay_window_title_w else screen_window_title_w;
+    overlay_style.adopt(banner_title_w);
 
     const app_state = try SoulsApp.create(std.heap.page_allocator, .{
         .name = app_name,
@@ -357,6 +376,7 @@ test {
     _ = @import("runtime_copy.zig");
     _ = @import("screen.zig");
     _ = @import("souls.zig");
+    _ = @import("throttle.zig");
     _ = @import("views.zig");
     _ = @import("tests.zig");
 }

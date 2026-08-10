@@ -188,6 +188,21 @@ pub const Event = struct {
     /// twenty. See `throttle.zig`.
     throttle_ms: u32 = 0,
 
+    /// Which screen wins when both want the glass.
+    ///
+    /// Higher outranks lower. A screen that outranks the one currently
+    /// up takes it down and replaces it; anything that does not is
+    /// dropped, because two banners at once is not an option. Equal
+    /// ranks do not displace each other, so the second permission
+    /// prompt of a run does not interrupt the first one's screen.
+    ///
+    /// The numbers mean nothing on their own — only their order does.
+    /// Roughly: the thing you were working towards, then news you have
+    /// to act on, then work landing, then progress you were watching
+    /// happen anyway. No default, so a new row has to decide where it
+    /// sits rather than silently arriving at the bottom.
+    priority: u8,
+
     /// What the headline says out of the box.
     ///
     /// Deliberately just the event's own name. The Souls wording is the
@@ -209,11 +224,23 @@ const api_error_types =
     "authentication_failed|oauth_org_not_allowed|billing_error|" ++
     "invalid_request|model_not_found|server_error|max_output_tokens|unknown";
 
+/// A screen someone typed out by hand outranks the whole catalog. It is
+/// an instruction, not a notification: `ai-souls "YOU DIED"` is never
+/// held back and always takes the glass.
+pub const by_hand_priority: u8 = 255;
+
 /// `SessionStart` fires for five different reasons and says which in its
 /// `source`, which is also what its matcher is matched against. They are
 /// five separate rows rather than one, because "I opened a terminal" and
 /// "the context just got compacted out from under me" are not the same
 /// news — and the second one is the only one worth a screen by default.
+///
+/// Every row ships as the Death screen. Not because every event is a
+/// disaster, but because YOU DIED in that red serif is the one screen
+/// the game is actually known for, and the other five styles are
+/// educated guesses at what a bonfire or a covenant banner should look
+/// like. They are all still there to pick — none of them becomes a
+/// default until it has been checked against the real thing.
 pub const events = [_]Event{
     .{
         .key = "session_start",
@@ -221,9 +248,13 @@ pub const events = [_]Event{
         .blurb = "A Claude Code session starts fresh.",
         .hook_event = "SessionStart",
         .matcher = "startup",
+        // You are the one who opened the terminal. Bottom of the pile:
+        // anything else that turns up in the same breath is news, and
+        // this is not.
+        .priority = 10,
         .default_title = "Session started",
-        .default_style = .bonfire,
-        .default_sound = .ember,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -232,9 +263,10 @@ pub const events = [_]Event{
         .blurb = "An earlier session is picked back up.",
         .hook_event = "SessionStart",
         .matcher = "resume",
+        .priority = 10,
         .default_title = "Session resumed",
-        .default_style = .bonfire,
-        .default_sound = .ember,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -243,9 +275,10 @@ pub const events = [_]Event{
         .blurb = "The conversation is wiped with `/clear`.",
         .hook_event = "SessionStart",
         .matcher = "clear",
+        .priority = 10,
         .default_title = "Session cleared",
-        .default_style = .hollow,
-        .default_sound = .thud,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -254,9 +287,10 @@ pub const events = [_]Event{
         .blurb = "A session is branched into a new one.",
         .hook_event = "SessionStart",
         .matcher = "fork",
+        .priority = 10,
         .default_title = "Session forked",
-        .default_style = .soul,
-        .default_sound = .chime,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -264,9 +298,12 @@ pub const events = [_]Event{
         .label = "Compacting context",
         .blurb = "The conversation is about to be compacted.",
         .hook_event = "PreCompact",
+        // Below the screen that says it finished, so a compaction that
+        // runs quickly does not spend its one banner on the start of it.
+        .priority = 35,
         .default_title = "Compacting context",
-        .default_style = .hollow,
-        .default_sound = .thud,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -278,9 +315,10 @@ pub const events = [_]Event{
         .blurb = "Compaction finishes and the session picks up again.",
         .hook_event = "SessionStart",
         .matcher = "compact",
+        .priority = 40,
         .default_title = "Context compacted",
-        .default_style = .bonfire,
-        .default_sound = .ember,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -288,9 +326,14 @@ pub const events = [_]Event{
         .label = "Turn completed",
         .blurb = "Claude finishes responding.",
         .hook_event = "Stop",
+        // Fires at the end of every single turn, and `Stop` lands a
+        // second or two after the last tool call — so it is the screen
+        // most likely to be standing in front of something better.
+        // Above only the five you caused yourself.
+        .priority = 20,
         .default_title = "Turn completed",
-        .default_style = .victory,
-        .default_sound = .choir,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -301,9 +344,12 @@ pub const events = [_]Event{
         // A run that needs three permissions in a row asks for them one
         // after another, and the idle nudge repeats on its own.
         .throttle_ms = 10_000,
+        // The only event where a missed screen costs wall-clock: the
+        // run is stopped until you look at it.
+        .priority = 80,
         .default_title = "Question asked",
-        .default_style = .soul,
-        .default_sound = .chime,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -315,9 +361,13 @@ pub const events = [_]Event{
         // The burstiest event in the catalog by a distance: an agent
         // that has got something wrong tends to get it wrong repeatedly
         // and quickly, and the twentieth screen says nothing the first
-        // one did not. Wide, because the You Died screen it draws is
-        // itself seven seconds long — half a shorter window.
+        // one did not. Wide, because the screen it draws is itself
+        // seven seconds long — half a shorter window.
         .throttle_ms = 30_000,
+        // Loud but usually not yours to deal with — the agent tries
+        // something else and carries on. Under the errors that end the
+        // turn outright.
+        .priority = 50,
         .default_title = "Tool call failed",
         .default_style = .death,
         .default_sound = .you_died,
@@ -333,6 +383,9 @@ pub const events = [_]Event{
         // A rate limit lasts minutes and is retried into the whole
         // time. It is one piece of news.
         .throttle_ms = 60_000,
+        // Under `api_error`: there is nothing to do about a rate limit
+        // but wait, where an auth or billing failure needs you.
+        .priority = 65,
         .default_title = "Rate limited",
         .default_style = .death,
         .default_sound = .you_died,
@@ -346,6 +399,7 @@ pub const events = [_]Event{
         .matcher = api_error_types,
         .matcher_label = "any non-rate-limit API error",
         .throttle_ms = 30_000,
+        .priority = 70,
         .default_title = "API error",
         .default_style = .death,
         .default_sound = .you_died,
@@ -358,9 +412,13 @@ pub const events = [_]Event{
         .hook_event = "PostToolUse",
         .matcher = "Bash",
         .condition = "Bash(gh pr create:*)",
+        // The top of the catalog. A PR is the thing the whole session
+        // was for, and it is the one screen that should never lose —
+        // least of all to the commit that came just before it.
+        .priority = 90,
         .default_title = "PR created",
-        .default_style = .soul,
-        .default_sound = .choir,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -370,9 +428,11 @@ pub const events = [_]Event{
         .hook_event = "PostToolUse",
         .matcher = "Bash",
         .condition = "Bash(git commit:*)",
+        // Work landing, which beats work merely progressing.
+        .priority = 60,
         .default_title = "Commit made",
-        .default_style = .bonfire,
-        .default_sound = .ember,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -381,9 +441,12 @@ pub const events = [_]Event{
         .blurb = "A tool call is refused.",
         .hook_event = "PermissionDenied",
         .throttle_ms = 10_000,
+        // Level with the question that usually precedes it: the run has
+        // stopped and it is waiting on you either way.
+        .priority = 80,
         .default_title = "Permission denied",
-        .default_style = .covenant,
-        .default_sound = .thud,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -393,9 +456,10 @@ pub const events = [_]Event{
         .hook_event = "SubagentStop",
         // A fan-out of ten agents lands all at once.
         .throttle_ms = 10_000,
+        .priority = 30,
         .default_title = "Subagent finished",
-        .default_style = .soul,
-        .default_sound = .chime,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
     .{
@@ -403,9 +467,10 @@ pub const events = [_]Event{
         .label = "Session ended",
         .blurb = "The session terminates.",
         .hook_event = "SessionEnd",
+        .priority = 10,
         .default_title = "Session ended",
-        .default_style = .hollow,
-        .default_sound = .gong,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = false,
     },
 };
@@ -519,6 +584,52 @@ test "every way a session can start is its own row" {
         if (!std.mem.eql(u8, event.hook_event, "SessionStart")) continue;
         const armed = std.mem.eql(u8, event.key, "compaction_done");
         try std.testing.expectEqual(armed, event.default_enabled);
+    }
+}
+
+test "every screen ships as the one screen the game is known for" {
+    // The other five styles are guesses until someone has checked them
+    // against the real thing, so none of them gets to be a default.
+    for (events) |event| {
+        try std.testing.expectEqual(Style.death, event.default_style);
+        try std.testing.expectEqual(Sound.you_died, event.default_sound);
+    }
+}
+
+test "the catalog ranks the news above the noise" {
+    const rank = struct {
+        fn of(key: []const u8) u8 {
+            return events[indexOfKey(key).?].priority;
+        }
+    }.of;
+
+    // The one the ranking exists for: a commit and the PR it leads to
+    // arrive seconds apart, and the PR is what the session was for.
+    try std.testing.expect(rank("commit_made") < rank("pr_created"));
+    // And nothing in the catalog outranks it.
+    for (events) |event| {
+        try std.testing.expect(event.priority <= rank("pr_created"));
+    }
+
+    // Blocked-and-waiting-on-you beats a failure the agent will retry
+    // by itself, which beats a turn simply ending.
+    try std.testing.expect(rank("tool_failed") < rank("api_error"));
+    try std.testing.expect(rank("rate_limited") < rank("api_error"));
+    try std.testing.expect(rank("tool_failed") < rank("question_asked"));
+    try std.testing.expect(rank("turn_complete") < rank("tool_failed"));
+    try std.testing.expect(rank("compaction") < rank("compaction_done"));
+
+    // The five you caused yourself sit at the bottom, under the events
+    // that tell you something you could not have known.
+    for (events) |event| {
+        if (!std.mem.eql(u8, event.hook_event, "SessionStart")) continue;
+        if (std.mem.eql(u8, event.key, "compaction_done")) continue;
+        try std.testing.expect(event.priority < rank("turn_complete"));
+    }
+
+    // A screen a person typed out is not in the running at all.
+    for (events) |event| {
+        try std.testing.expect(event.priority < by_hand_priority);
     }
 }
 

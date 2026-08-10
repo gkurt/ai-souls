@@ -146,16 +146,22 @@ fn fire(io: std.Io, paths: *const paths_mod.Paths, rest: []const []const u8) Out
     // would be worse than the screens.
     const entry = config.events[index];
     var stamps = throttle.load(io, paths);
-    if (!stamps.allows(index, souls.events[index].throttle_ms, nowMs(io))) return .handled_ok;
+    if (!stamps.allows(index, nowMs(io))) return .handled_ok;
     return armScreen(io, paths, &stamps, index, entry);
 }
 
 /// Record a screen as about to be drawn, and hand it to `main`.
 ///
 /// Stamped here rather than after the window closes, because the
-/// throttle's job is to stop the NEXT process opening a second banner
-/// over this one — and by the time this one is over, that decision has
-/// already been made.
+/// throttle's job is to arbitrate the NEXT process against this one —
+/// and by the time this one is over, that decision has been made. The
+/// record carries this screen's rank as well as its length, so the next
+/// process knows both how long to keep clear of it and whether it is
+/// allowed not to.
+///
+/// Taking down a banner this one has outranked is `main`'s job, not
+/// this function's: the decision is made here, and acted on next to the
+/// window it clears the way for.
 fn armScreen(
     io: std.Io,
     paths: *const paths_mod.Paths,
@@ -474,6 +480,9 @@ fn status(io: std.Io, paths: *const paths_mod.Paths) Outcome {
         if (event.throttle_ms > 0) {
             hook_writer.print(" · max 1/{d}s", .{event.throttle_ms / 1000}) catch {};
         }
+        // Meaningful only against the other rows, which is why it is a
+        // bare number and why every row carries one.
+        hook_writer.print(" · rank {d}", .{event.priority}) catch {};
         say(io, "{s:<3} {s:<18} {s:<24} {s}\n", .{
             if (entry.enabled) "on" else "off",
             event.key,
@@ -521,8 +530,10 @@ fn printUsage(io: std.Io) void {
         \\
         \\Screens fired by hooks are throttled: never one over another,
         \\and the burst-prone events no more than once in their window —
-        \\`ai-souls status` prints it. A screen you ask for by hand is
-        \\never held back.
+        \\`ai-souls status` prints it. Events are also ranked, so a PR
+        \\landing on top of the commit that led to it replaces its screen
+        \\instead of being dropped. A screen you ask for by hand outranks
+        \\everything and is never held back.
         \\
     , .{});
 }

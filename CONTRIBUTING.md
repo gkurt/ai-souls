@@ -60,6 +60,71 @@ startup. The number was wrong (see [Platform notes](#platform-notes)).
 The resident process cost ~3.5% of a core continuously, and meant that
 after a reboot nothing was listening until you started the app by hand.
 
+## Which screen wins
+
+Two full-screen banners at once is not an option, and with nothing
+resident there is nowhere to keep "one is already up" except a file.
+`src/throttle.zig` is that file (`~/.ai-souls/fired.txt`) and the rules
+over it. `fire` reads it before deciding and writes it after deciding
+yes — one small read and one small write, on the only path that was
+going to open a window anyway. A screen it decides against costs the
+read and exits `handled_ok`: a hook reporting failure over a suppressed
+decoration would be a bug.
+
+Three rules, in order:
+
+1. **The floor.** Nothing draws over a banner that is still up. The
+   record carries the incumbent's own `duration_ms`, so this is exact
+   rather than a guess.
+2. **The rank.** `Event.priority` is the exception to the floor. A
+   screen that strictly outranks the incumbent takes the glass; the
+   incumbent's banner comes down. Ties do not displace — the second
+   permission prompt of a run leaves the first one's screen alone.
+3. **The window.** `Event.throttle_ms`, per event and only against
+   itself. Outranking your way past the floor does not exempt you from
+   this.
+
+Ranks are comptime, not configurable, and the numbers mean nothing
+except in relation to each other. `ai-souls status` prints them.
+
+`ai-souls "..."` is exempt from all three at `souls.by_hand_priority` —
+it is an instruction, not a notification. It still records itself, so
+nothing lands on top of it either.
+
+The record is racy on purpose. Two hooks in the same instant both read
+the same stamp and both decide yes. Locking a file to arbitrate a
+decoration costs more than the double screen it prevents, and the hook
+events that actually burst are serialized by Claude Code anyway.
+
+### Taking the incumbent down
+
+The decision is made in `cli.zig`; acting on it is `main`'s job, next to
+the window it clears the way for. `overlay_style.dismissOthers` walks
+top-level windows carrying the banner's private title, skips this
+process's own, hides each match and terminates its process with exit
+code 0 — that process is some hook's `ai-souls fire`, still being waited
+on by Claude Code, and being superseded is not a failure.
+
+It terminates rather than posting `WM_CLOSE`, for two reasons. The pid
+comes from a live window with our own title, so there is no pid-reuse
+hazard to guard against. And a close the host chose to ignore would
+leave the loser's sound playing underneath the winner's.
+
+This is why there are **two** overlay window titles. A settings process
+declares an overlay window too — that is what Preview draws into — so a
+banner has to be nameable without also naming the idle overlay inside
+someone's open settings window. `declaredWindows` picks "AI Souls
+Screen" for a screen process and "AI Souls Overlay" otherwise. Get that
+wrong and a hook firing takes the settings app down with it.
+
+`overlay_style.can_dismiss` gates the whole thing, and it is Win32-only:
+the mechanism leans entirely on `FindWindowExW` naming a window in
+another process, and AppKit has no equivalent outside Accessibility.
+Where it is false the floor is absolute and rank never fires, so a
+screen is missed rather than drawn over another one — which is the right
+way round to fail. The throttle tests for preemption skip themselves
+there. If macOS ever gets a real look, this is the gap to close.
+
 ## Why hooks run a copy
 
 A hook names its command by absolute path, and every path a package

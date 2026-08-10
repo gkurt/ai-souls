@@ -12,6 +12,7 @@ const canvas = native_sdk.canvas;
 const app = @import("app.zig");
 const config_mod = @import("config.zig");
 const souls = @import("souls.zig");
+const throttle = @import("throttle.zig");
 
 const Model = app.Model;
 const Msg = app.Msg;
@@ -230,6 +231,18 @@ fn detailPane(ui: *Ui, model: *const Model) Node {
                 }, ui.fmt("This one arrives in bursts — at most one screen every {d}s.", .{
                     event.throttle_ms / 1000,
                 })),
+                // Counted, not numbered: the rank only means anything
+                // against the other rows, and nobody is going to hold
+                // sixteen integers in their head to read one of them.
+                // Absent where the ranking cannot fire at all, rather
+                // than promising something the platform will not do.
+                if (!throttle.can_preempt) ui.spacer(0) else ui.text(.{
+                    .wrap = true,
+                    .style_tokens = .{ .foreground = .text_muted },
+                }, ui.fmt("Wins against {d} of the other {d} events when two land at once.", .{
+                    outrankedCount(event.priority),
+                    souls.event_count - 1,
+                })),
             }),
 
             ui.row(.{ .gap = 10, .cross = .center }, .{
@@ -319,6 +332,17 @@ fn detailPane(ui: *Ui, model: *const Model) Node {
             }),
         }),
     });
+}
+
+/// How many catalog rows this rank strictly beats. Ties are not wins —
+/// two screens of equal rank leave each other alone — so this counts
+/// the same way `throttle.outranks` decides.
+fn outrankedCount(priority: u8) usize {
+    var beaten: usize = 0;
+    for (souls.events) |other| {
+        if (other.priority < priority) beaten += 1;
+    }
+    return beaten;
 }
 
 fn fieldLabel(ui: *Ui, text: []const u8) Node {

@@ -12,6 +12,7 @@ const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
 const paths_mod = @import("paths.zig");
 const souls = @import("souls.zig");
+const throttle = @import("throttle.zig");
 
 const testing = std.testing;
 
@@ -94,6 +95,31 @@ test "the same hook twice in a row draws one screen" {
     // `handled_ok`, not a failure: the hook did its job, it just had
     // nothing to add. Claude Code must never see this as an error.
     try testing.expect(cli.run(testing.allocator, testing.io, hook, &paths) == .handled_ok);
+}
+
+test "a PR takes the glass from the commit that led to it" {
+    if (!throttle.can_preempt) return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var paths: paths_mod.Paths = .{};
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const dir = std.fmt.bufPrint(&dir_buffer, ".zig-cache/tmp/{s}", .{tmp.sub_path}) catch
+        return error.PathTooLong;
+    paths.fired.set(paths_mod.join(&file_buffer, dir, "fired.txt"));
+
+    // Both fire inside one banner's length, which is the whole point:
+    // without the ranking the second one would be dropped for landing
+    // on top of the first.
+    const commit = &.{ "ai-souls", "fire", "commit_made" };
+    const pr = &.{ "ai-souls", "fire", "pr_created" };
+    try testing.expect(cli.run(testing.allocator, testing.io, commit, &paths) == .run_screen);
+    try testing.expect(cli.run(testing.allocator, testing.io, pr, &paths) == .run_screen);
+
+    // And not the other way round — a commit does not interrupt a PR.
+    try testing.expect(cli.run(testing.allocator, testing.io, commit, &paths) == .handled_ok);
 }
 
 test "a screen asked for by hand is never held back" {
@@ -265,7 +291,7 @@ test "the settings window does not quit when a preview ends" {
     try testing.expect(harness.model.overlay.active);
 
     const before = harness.effects.window_action_state.quit_count;
-    harness.model.overlay.started_ms -= 5000;
+    harness.model.overlay.started_ms -= @intCast(harness.model.overlay.duration_ms + 50);
     harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .fired } });
 
     try testing.expect(!harness.model.overlay.active);

@@ -37,7 +37,7 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/app.zig` | the whole Model/Msg/update — the TEA loop |
 | `src/souls.zig` | the comptime event catalog and the sound bank |
 | `src/config.zig` | allocation-free config codec for `config.txt` |
-| `src/throttle.zig` | the on-disk record of when each event last drew, and the rules over it |
+| `src/throttle.zig` | the on-disk record of when each event last drew, and the rules over it — the floor, the ranking, the per-event window |
 | `src/cli.zig` | every non-GUI verb (`install`, `fire`, `status`, …) and the trigger handshake |
 | `src/hooks.zig` | the JSON merge into `~/.claude/settings.json` |
 | `src/paths.zig` | every path the app knows, resolved once |
@@ -83,6 +83,18 @@ Invariants worth knowing before you change things:
   costs one read and exits `handled_ok` — a hook that reported failure
   over a suppressed decoration would be a bug. It is racy on purpose;
   see the module comment before adding a lock.
+- **Every catalog row ships as `.death` / `.you_died`.** Not a style
+  choice per event — the other five styles are unverified against the
+  game, so none of them is a default until someone has checked one. A
+  test enforces it. They all stay pickable.
+- **`Event.priority` is what lets a screen replace one still on
+  screen,** and replacing means `overlay_style.dismissOthers`
+  terminating the other process. Two consequences: a banner's window
+  title must stay distinct from the settings window's overlay title, or
+  a hook takes the settings app down with it; and preemption is gated
+  on `overlay_style.can_dismiss`, Win32-only, because drawing two
+  banners over each other is worse than missing one. New rows must
+  choose a rank — the field has no default on purpose.
 
 ## Releasing
 
