@@ -1,0 +1,86 @@
+# Does it build, and does it pass, on both platforms we ship?
+#
+# This is the gate for `main` — the status check to require on a PR.
+# `release.yml` is the one that packages and persists; this one just
+# answers the question fast.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NATIVE_SDK_VERSION: "0.8.1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  manifests:
+    name: manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # Two manifests carry the version; a hand edit to one of them is
+      # the way they drift.
+      - run: node tools/sync-version.mjs --check
+
+  checks:
+    name: checks ${{ matrix.slot }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            slot: win32-x64
+            exe: ai-souls.exe
+            target: x86_64-windows-gnu
+          # One arch is enough to answer "does it compile on a Mac".
+          # release.yml is where both slices get built and fused.
+          - runner: macos-14
+            slot: darwin-arm64
+            exe: ai-souls
+            target: aarch64-macos
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install the Native SDK
+        run: npm install -g "@native-sdk/cli@${NATIVE_SDK_VERSION}"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .native/build/.zig-cache
+            ~/.cache/zig
+            ~/AppData/Local/zig
+          key: zig-${{ matrix.slot }}-${{ env.NATIVE_SDK_VERSION }}-${{ hashFiles('src/**', 'app.zon') }}
+          restore-keys: |
+            zig-${{ matrix.slot }}-${{ env.NATIVE_SDK_VERSION }}-
+
+      - run: native check
+      - run: native test --yes
+      - run: native build --yes -Dtarget=${{ matrix.target }}
+
+      # Free, since it was built anyway, and it means the macOS binary
+      # nobody here can compile is always one download away.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ matrix.slot }}
+          path: zig-out/bin/${{ matrix.exe }}
+          if-no-files-found: error
+          retention-days: 14

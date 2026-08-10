@@ -191,21 +191,60 @@ exact arch. A platform with no binary at all gets a clear error from the
 launcher rather than a mystery.
 
 Only `win32-x64` can be built on a Windows machine — the macOS target
-needs Apple's SDK. `.github/workflows/release.yml` builds both on their
-own runners and stages them into one package:
-
-- **push to `main`** — builds and tests on both platforms, and keeps
-  each binary as an artifact for 90 days
-- **tag `v*`** — the same, plus a check that the tag matches
-  `.version` in `app.zon`, plus a **draft** GitHub release with the
-  binaries and the tarball attached
-
-Nothing is published automatically. Publishing the draft, and
-`npm publish`, are both done by hand.
+needs Apple's SDK. CI builds both on their own runners and stages them
+into one package.
 
 CI names its targets explicitly instead of building for the host. A
 native build compiles for the runner's *detected CPU features*, so a
 binary built on a machine with AVX-512 can crash on one without it.
+
+## Releasing
+
+Changelogs and versions are managed by
+[Tegami](https://tegami.fuma-nama.dev). Nothing about a release is typed
+by hand except the description of what changed.
+
+Write that description in the same commit as the change:
+
+```bash
+bun run tegami
+```
+
+It writes a `.tegami/*.md` file naming the bump type and what a user
+would notice. From there:
+
+| | |
+| --- | --- |
+| **`ci.yml`** — push, PR | `native check`, `native test`, `native build` on Windows and macOS. Keeps each binary as a 14-day artifact, so the macOS build nobody here can compile is always one download away. |
+| **`version.yml`** — push to `main` | `tegami ci` turns pending changelogs into a **Version Packages** PR: bumped `npm/package.json` + `app.zon`, and `CHANGELOG.md`. Merging it pushes a `v<version>` tag. |
+| **`release.yml`** — `v*` tag | Builds both slots, fuses the macOS one, packs the tarball, and drafts a GitHub release with the changelog as its notes and the binaries attached. |
+
+So the decision a human makes is **merging the Version Packages PR**.
+
+Two things stay deliberately manual:
+
+- **The GitHub release is a draft.** The assets are persisted and the
+  notes are written; publishing it is a click.
+- **npm publishing is off** until the `NPM_PUBLISH` repository variable
+  is set to `true`. It needs npm
+  [trusted publishing](https://docs.npmjs.com/trusted-publishers)
+  configured against `release.yml` first — no `NPM_TOKEN`, the workflow
+  already has `id-token: write`. Until then the tarball is only attached
+  to the draft.
+
+### Why the version lives in two files
+
+`npm/package.json` is the version of record, because it is the file
+Tegami bumps. `app.zon` carries the same number because the Native SDK
+reads it. `tools/sync-version.mjs` copies one to the other from Tegami's
+`applyCliDraft` hook, CI checks they agree, and the packager refuses to
+stage a package where they don't.
+
+`npm/package.json` is also marked `"private": true`, which is what stops
+Tegami from publishing it: the real package does not exist as a
+directory in this repo, it is assembled into `dist/npm` out of binaries
+from two runners. The packager drops the flag when it stages the public
+copy.
 
 Upgrading moves the binary, but the hooks name a copy under
 `~/.ai-souls/bin` rather than the package, so they keep working — see

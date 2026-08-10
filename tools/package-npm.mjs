@@ -45,14 +45,30 @@ if (!existsSync(built)) {
   process.exit(1);
 }
 
-// The version lives in app.zon and nowhere else, so the package cannot
-// drift from the binary it wraps.
+// `npm/package.json` is the version of record — it is the file Tegami
+// bumps. `app.zon` carries the same number for the Native SDK's sake,
+// and disagreeing with it means something wrote one and not the other,
+// so the package would not match the binary it wraps.
+const pkg = JSON.parse(await readFile(join(root, "npm", "package.json"), "utf8"));
+const version = pkg.version;
 const manifest = await readFile(join(root, "app.zon"), "utf8");
-const version = manifest.match(/\.version\s*=\s*"([^"]+)"/)?.[1];
-if (!version) {
-  console.error("could not find .version in app.zon");
+const zonVersion = manifest.match(/\.version\s*=\s*"([^"]+)"/)?.[1];
+if (zonVersion !== version) {
+  console.error(
+    `version drift: npm/package.json says ${version}, app.zon says ${zonVersion}\n` +
+      `Run \`node tools/sync-version.mjs\`.`,
+  );
   process.exit(1);
 }
+
+// The template stays private so Tegami never publishes it from `npm/`,
+// where there are no binaries — see the note in `scripts/tegami.mts`.
+// The staged copy is the public one, so the flag comes off here.
+if (pkg.private !== true) {
+  console.error("npm/package.json must stay `\"private\": true` — see scripts/tegami.mts");
+  process.exit(1);
+}
+delete pkg.private;
 
 if (!keep) await rm(out, { recursive: true, force: true });
 await mkdir(join(out, "vendor", slot), { recursive: true });
@@ -60,6 +76,10 @@ await mkdir(join(out, "vendor", slot), { recursive: true });
 await cp(join(root, "npm", "bin"), join(out, "bin"), { recursive: true });
 await cp(join(root, "assets"), join(out, "assets"), { recursive: true });
 await cp(join(root, "README.md"), join(out, "README.md"));
+// Written by Tegami next to the manifest it versions; absent until the
+// first release has been cut.
+const changelog = join(root, "npm", "CHANGELOG.md");
+if (existsSync(changelog)) await cp(changelog, join(out, "CHANGELOG.md"));
 await cp(built, join(out, "vendor", slot, exeName));
 // npm preserves the mode bit, and a binary that is not executable is a
 // confusing failure on the far side.
@@ -67,8 +87,6 @@ if (!slot.startsWith("win32") && process.platform !== "win32") {
   await chmod(join(out, "vendor", slot, exeName), 0o755);
 }
 
-const pkg = JSON.parse(await readFile(join(root, "npm", "package.json"), "utf8"));
-pkg.version = version;
 await writeFile(join(out, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
 
 const slots = (await readdir(join(out, "vendor"), { withFileTypes: true }))

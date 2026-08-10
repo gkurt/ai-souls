@@ -1,0 +1,19 @@
+{
+  "name": "@ai-souls/root",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "npm"
+  ],
+  "scripts": {
+    "tegami": "node scripts/tegami.mts",
+    "package": "node tools/package-npm.mjs",
+    "sync-version": "node tools/sync-version.mjs"
+  },
+  "devDependencies": {
+    "tegami": "^1.3.4"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

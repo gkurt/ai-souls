@@ -7,20 +7,23 @@
 # has a win32-x64 slot and nothing else, and the launcher says so
 # plainly on any other platform.
 #
-# It runs on every push to main so main is always known to build on both
-# platforms and a fresh macOS binary is always a download away. Drop the
-# `branches` trigger if that ever costs more than it is worth.
+# A `v*` tag starts it, and `version.yml` pushes that tag when a Version
+# Packages PR merges — so the human decision is reviewing and merging the
+# PR, not running anything by hand. `ci.yml` covers ordinary pushes.
 #
-# Publishing is deliberately NOT wired up. A tag drafts a GitHub release
-# with the binaries and the tarball attached; announcing it, and pushing
-# to the npm registry, stay human decisions.
+# The GitHub release is left as a DRAFT: the assets are persisted and the
+# notes are written, and a person decides whether the world sees it.
+#
+# The npm publish is off until the `NPM_PUBLISH` repository variable is
+# `true`, because it needs one-time trusted-publishing setup on npmjs.com
+# first (see the README). Until then a tag builds and drafts, and the
+# publish job skips with a note.
 
 name: release
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
     tags: ["v*"]
 
 concurrency:
@@ -151,15 +154,16 @@ jobs:
           pattern: binary-*
 
       # A tag that disagrees with the manifest would publish a package
-      # whose version does not match the binary inside it.
-      - name: Check the tag against app.zon
+      # whose version does not match the tag people downloaded it under.
+      # (app.zon is checked against the same number by the packager.)
+      - name: Check the tag against the manifest
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
-          version=$(grep -oP '\.version\s*=\s*"\K[^"]+' app.zon)
+          version=$(node -p "require('./npm/package.json').version")
           tag="${GITHUB_REF_NAME#v}"
           if [ "$version" != "$tag" ]; then
-            echo "tag $GITHUB_REF_NAME does not match .version = \"$version\" in app.zon"
+            echo "tag $GITHUB_REF_NAME does not match version $version in npm/package.json"
             exit 1
           fi
 
@@ -201,6 +205,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -224,16 +229,73 @@ jobs:
           done
           ls -l release
 
-      # Draft, not published: the assets are persisted and the release
-      # notes are written, and a person decides whether the world sees
-      # it.
+      # The changelog was written for this exact version by Tegami, so
+      # prefer it over generated commit notes. Fall back if the section
+      # is missing — a hand-pushed tag has no changelog entry.
+      - name: Take the notes from the changelog
+        id: notes
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [ -f npm/CHANGELOG.md ]; then
+            awk -v want="## ai-souls@${version}" '
+              $0 == want { grab = 1; next }
+              grab && /^## / { exit }
+              grab { print }
+            ' npm/CHANGELOG.md > notes.md
+          fi
+          if [ -s notes.md ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "no changelog section for ${version} — falling back to generated notes"
+          fi
+
+      # Draft, not published: the assets are persisted and the notes are
+      # written, and a person decides whether the world sees it.
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.notes.outputs.have }}
         run: |
+          set -euo pipefail
+          if [ "$NOTES" = "true" ]; then
+            source_of_notes=(--notes-file notes.md)
+          else
+            source_of_notes=(--generate-notes)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes \
+            "${source_of_notes[@]}" \
             release/*
+
+  publish:
+    name: publish to npm
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) — no NPM_TOKEN
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: tarball
+
+      # Off by default. npm trusted publishing has to be configured on
+      # npmjs.com against this workflow first, and until it is, a publish
+      # attempt fails in a way that looks like a broken release rather
+      # than a missing setting.
+      - name: Publish
+        if: vars.NPM_PUBLISH == 'true'
+        run: npm publish tarball/*.tgz --access public
+
+      - name: Explain the skip
+        if: vars.NPM_PUBLISH != 'true'
+        run: |
+          echo "Set the NPM_PUBLISH repository variable to 'true' to publish."
+          echo "It needs npm trusted publishing configured for this workflow first."
+          echo "The tarball is attached to the draft release either way."

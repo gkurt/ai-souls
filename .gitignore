@@ -6,3 +6,13 @@ zig-out/
 dist/
 node_modules/
 *.tgz
+
+# logs
+logs
+*.log
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (macOS) folder config
+.DS_Store

@@ -1,0 +1,75 @@
+# Turn pending changelogs into a release.
+#
+# Two steps, both on `main`:
+#
+#   1. `tegami ci` sees `.tegami/*.md` and opens a Version Packages PR
+#      that bumps `npm/package.json` + `app.zon` and writes CHANGELOG.md.
+#   2. Merging that PR lands a new version on main, and the tag job below
+#      pushes `v<version>` — which is what starts `release.yml`, the only
+#      workflow with the binaries.
+#
+# Tegami does not publish anything here. The npm package does not exist
+# as a directory in this repo; it is assembled from binaries built on two
+# other runners. See the note in scripts/tegami.mts.
+
+name: Version
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency: version-${{ github.ref }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Version packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the version branch
+      pull-requests: write # open the Version Packages PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+
+      - name: Version
+        run: bun run tegami ci
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  tag:
+    name: Tag a new version
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Idempotent on purpose: this runs on every push to main, and does
+      # nothing at all unless the version on main is one we have never
+      # tagged. That happens exactly when a Version Packages PR merges.
+      - name: Tag if the version is new
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./npm/package.json').version")
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "${tag} already exists — nothing to do"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "${tag}"
+          git push origin "${tag}"
+          echo "pushed ${tag} — release.yml takes it from here"

@@ -1,0 +1,16 @@
+{
+  "workbench.editor.labelFormat": "medium",
+  "editor.formatOnSave": true,
+  "[zig]": {
+    "editor.defaultFormatter": "ziglang.vscode-zig"
+  },
+  "files.associations": {
+    "*.zon": "zig"
+  },
+  "search.exclude": {
+    "**/.native": true,
+    "**/.zig-cache": true,
+    "**/zig-out": true,
+    "**/dist": true
+  }
+}

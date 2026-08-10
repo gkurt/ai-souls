@@ -1,6 +1,7 @@
 {
   "name": "ai-souls",
   "version": "0.1.0",
+  "private": true,
   "description": "Dark Souls screens for your coding agent.",
   "type": "module",
   "license": "MIT",
@@ -19,7 +20,8 @@
     "bin",
     "vendor",
     "assets",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "keywords": [
     "claude",
