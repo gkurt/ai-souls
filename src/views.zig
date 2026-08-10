@@ -141,3 +141,14 @@ pub fn overlayView(ui: *Ui, model: *const Model) Node {
 pub fn blankView(ui: *Ui) Node {
     return ui.column(.{ .grow = 1 }, .{});
 }
+
+/// The opaque-mode window's tree: the same banner over a constant
+/// charcoal floor. That window has no see-through to give, so the floor
+/// stands in for the desktop the soft edges dissolve into — and like
+/// the window clear it replaces, it does not fade with the ink.
+pub fn opaqueOverlayView(ui: *Ui, model: *const Model) Node {
+    return ui.column(.{
+        .grow = 1,
+        .style = .{ .background = canvas.Color.rgb8(0x12, 0x11, 0x10), .radius = 0 },
+    }, .{overlayView(ui, model)});
+}

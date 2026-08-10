@@ -132,16 +132,21 @@ fn bandWindow(display: screen.Display) native_sdk.ShellWindow {
 // ------------------------------------------------------------- theming
 
 /// A display rung sized for the banner headline, the serif on it, and
-/// the charcoal an opaque-mode window clears to.
+/// a fully transparent canvas clear.
 fn tokens(model: *const Model) canvas.DesignTokens {
     var design = canvas.DesignTokens.theme(.{
         .color_scheme = .dark,
         .pack = .geist,
     });
 
-    // The transparent band never shows this; the opaque-mode window is
-    // exactly this behind the banner's own translucent ink.
-    design.colors.background = canvas.Color.rgb8(0x12, 0x11, 0x10);
+    // The MAIN canvas clears to this before the view paints, verbatim —
+    // the runtime zeroes the clear's alpha for transparent DECLARED
+    // windows, but extends the main canvas no such courtesy. Anything
+    // opaque here fills the pixels the soft edges leave un-inked, and
+    // the fade reads as a hard-edged bar. The band starts from nothing;
+    // the view's ink is everything. (The opaque-mode window paints its
+    // own charcoal floor — see `views.opaqueOverlayView`.)
+    design.colors.background = canvas.Color.rgba8(0, 0, 0, 0);
 
     design.typography.font_id = serif_font_id;
 
@@ -215,7 +220,7 @@ fn bandFrame(display: screen.Display) overlay_style.Frame {
 
 fn windowView(ui: *AppUi, model: *const Model, window_label: []const u8) AppUi.Node {
     if (std.mem.eql(u8, window_label, app.overlay_window_label)) {
-        return views.overlayView(ui, model);
+        return views.opaqueOverlayView(ui, model);
     }
     return mainView(ui, model);
 }
