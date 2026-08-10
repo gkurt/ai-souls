@@ -214,22 +214,18 @@ fn declaredWindows(
     return scratch.windows[0..1];
 }
 
-/// The same band `declaredWindows` asks for, in the space macOS places
-/// windows in: AppKit's global points, whose origin is the bottom-left
-/// corner of the primary display. So the descriptor's `y` — a drop from
-/// the top of the display — has to be measured back up from the bottom
-/// instead. A centred band comes out at `bandTop` again, give or take
-/// the rounding it does.
-///
-/// The display is the primary one, because that is the only one this app
-/// measures — see `screen.zig`. Which means the band spans it and no
-/// other, however many are plugged in.
-fn bandFrame(size: screen.Size) overlay_style.Frame {
-    const height = app.bandHeight(size.width, size.height);
+/// The same band `declaredWindows` asks for, on the display it is meant
+/// for, in the space macOS places windows in: AppKit's global points,
+/// whose origin is the bottom-left corner of the primary display. So the
+/// descriptor's `y` — a drop from the top of the display — has to be
+/// measured back up from that display's own bottom edge instead.
+fn bandFrame(display: screen.Display) overlay_style.Frame {
+    const height = app.bandHeight(display.width, display.height);
+    const top = app.bandTop(display.width, display.height);
     return .{
-        .x = 0,
-        .y = size.height - app.bandTop(size.width, size.height) - height,
-        .width = size.width,
+        .x = display.x,
+        .y = display.y + display.height - top - height,
+        .width = display.width,
         .height = height,
     };
 }
@@ -245,14 +241,14 @@ fn windowView(ui: *AppUi, model: *const Model, window_label: []const u8) AppUi.N
 
 pub fn initialModel(
     paths: paths_mod.Paths,
-    size: screen.Size,
+    display: screen.Display,
     opaque_overlay: bool,
     screen_only: ?config_mod.EventSettings,
 ) Model {
     return .{
         .paths = paths,
-        .screen_width = size.width,
-        .screen_height = size.height,
+        .screen_width = display.width,
+        .screen_height = display.height,
         .overlay_transparent = !opaque_overlay,
         .screen_only = screen_only,
     };
@@ -288,7 +284,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Before the window exists, because `adopt` has to know where to put
     // it and `update` may not ask the OS anything.
-    const display = screen.primary();
+    const display = screen.active();
 
     if (screen_only != null) {
         // Getting this far with a banner already up means the throttle

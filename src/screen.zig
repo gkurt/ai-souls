@@ -1,4 +1,5 @@
-//! Primary display size, in the logical points window geometry uses.
+//! The display a banner is drawn on: its size in the logical points
+//! window geometry uses, and where it sits.
 //!
 //! Read once in `main` and carried in the model, because the overlay
 //! spans the display and `update` may not ask the OS anything. `main`
@@ -8,15 +9,22 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const Size = struct {
+pub const Display = struct {
     width: f32,
     height: f32,
+    /// The display's bottom-left corner in the space macOS places windows
+    /// in: AppKit's global points, whose origin is the bottom-left corner
+    /// of the PRIMARY display and whose y grows upwards. Zero everywhere
+    /// else, where the placement code reads the display itself (see
+    /// `overlay_style.centre`).
+    x: f32 = 0,
+    y: f32 = 0,
 };
 
 /// A middle-of-the-road desktop, used when the platform has no answer.
 /// The overlay is click-through and transparent, so being wrong here
 /// costs a slightly off-centre banner and nothing else.
-pub const fallback: Size = .{ .width = 1440, .height = 900 };
+pub const fallback: Display = .{ .width = 1440, .height = 900 };
 
 const windows_api = struct {
     const sm_cxscreen: c_int = 0;
@@ -27,20 +35,26 @@ const windows_api = struct {
 };
 
 const macos_api = struct {
+    const Point = extern struct { x: f64, y: f64 };
+    const Rect = extern struct { x: f64, y: f64, width: f64, height: f64 };
+
     extern "c" fn CGMainDisplayID() u32;
-    extern "c" fn CGDisplayPixelsWide(display: u32) usize;
-    extern "c" fn CGDisplayPixelsHigh(display: u32) usize;
+    extern "c" fn CGDisplayBounds(display: u32) Rect;
+    extern "c" fn CGGetDisplaysWithPoint(point: Point, max: u32, displays: [*]u32, count: *u32) i32;
+    extern "c" fn CGEventCreate(source: ?*anyopaque) ?*anyopaque;
+    extern "c" fn CGEventGetLocation(event: ?*anyopaque) Point;
+    extern "c" fn CFRelease(object: *anyopaque) void;
 };
 
-pub fn primary() Size {
+pub fn active() Display {
     return switch (builtin.os.tag) {
         .windows => windowsPrimary(),
-        .macos => macosPrimary(),
+        .macos => macosActive(),
         else => fallback,
     };
 }
 
-fn windowsPrimary() Size {
+fn windowsPrimary() Display {
     // GetSystemMetrics answers in physical pixels for a DPI-aware
     // process; window geometry is in logical points, so divide the
     // scale back out.
@@ -58,7 +72,7 @@ fn windowsPrimary() Size {
     };
 }
 
-fn macosPrimary() Size {
+fn macosActive() Display {
     // The test binary links no macOS frameworks. `linkPlatform` in the
     // Native SDK's build graph runs against the app module only, and a
     // Debug `native test` gets a separate module that never sees it — so
@@ -67,22 +81,51 @@ fn macosPrimary() Size {
     // returns before the extern is ever named.
     if (builtin.is_test) return fallback;
 
-    const display = macos_api.CGMainDisplayID();
-    const width = macos_api.CGDisplayPixelsWide(display);
-    const height = macos_api.CGDisplayPixelsHigh(display);
-    if (width == 0 or height == 0) return fallback;
-    // Quartz reports the display mode's point size, which is already
-    // the unit AppKit window frames use.
+    const primary = macos_api.CGDisplayBounds(macos_api.CGMainDisplayID());
+    if (primary.height <= 0) return fallback;
+
+    const bounds = pointerDisplay() orelse primary;
+    if (bounds.width <= 0 or bounds.height <= 0) return fallback;
+
+    // Quartz reports the display mode's point size, which is already the
+    // unit AppKit window frames use. It measures DOWN from the top-left
+    // corner of the primary display, though, and AppKit places windows UP
+    // from its bottom-left — so a display's own bottom edge sits at the
+    // primary's height less this display's bottom in Quartz terms.
     return .{
-        .width = @floatFromInt(width),
-        .height = @floatFromInt(height),
+        .width = @floatCast(bounds.width),
+        .height = @floatCast(bounds.height),
+        .x = @floatCast(bounds.x),
+        .y = @floatCast(primary.height - (bounds.y + bounds.height)),
     };
 }
 
-// On macOS this asserts the fallback rather than the real display, for
-// the linking reason above. Windows tests hit the real GetSystemMetrics.
-test "the primary display is a plausible size" {
-    const size = primary();
-    try std.testing.expect(size.width >= 320 and size.width <= 30_000);
-    try std.testing.expect(size.height >= 240 and size.height <= 30_000);
+/// The display the pointer is on, which is the one someone is working on.
+/// A banner is decoration for a person: put it on the primary display and
+/// on a laptop with an external monitor it flashes past on the screen
+/// nobody is looking at. Null when CoreGraphics will not say, which the
+/// caller reads as the primary.
+fn pointerDisplay() ?macos_api.Rect {
+    const event = macos_api.CGEventCreate(null) orelse return null;
+    defer macos_api.CFRelease(event);
+
+    var displays: [1]u32 = undefined;
+    var count: u32 = 0;
+    // Anything but kCGErrorSuccess, and `count` has not been written.
+    if (macos_api.CGGetDisplaysWithPoint(
+        macos_api.CGEventGetLocation(event),
+        displays.len,
+        &displays,
+        &count,
+    ) != 0) return null;
+    if (count == 0) return null;
+    return macos_api.CGDisplayBounds(displays[0]);
+}
+
+// On macOS this asserts the fallback rather than a real display, for the
+// linking reason above. Windows tests hit the real GetSystemMetrics.
+test "the active display is a plausible size" {
+    const display = active();
+    try std.testing.expect(display.width >= 320 and display.width <= 30_000);
+    try std.testing.expect(display.height >= 240 and display.height <= 30_000);
 }

@@ -44,7 +44,7 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/paths.zig` | every path the app knows, resolved once |
 | `src/runtime_copy.zig` | the copy under `~/.ai-souls/bin` that installed hooks actually run |
 | `src/views.zig` | both windows' widget trees |
-| `src/screen.zig` | the primary display's size, read once in `main` |
+| `src/screen.zig` | which display a banner is drawn on, and how big it is — read once in `main` |
 | `src/overlay_style.zig` | the raw Win32 and AppKit the SDK does not expose |
 | `src/tests.zig` | end-to-end tests over the real update loop |
 | `npm/` | the npm package's manifest and Node launcher — **not** the published tree |
@@ -95,7 +95,15 @@ Invariants worth knowing before you change things:
   likes, which with a second display attached is not on the right one.
   So the banner is moved once it exists — `overlay_style` on both
   platforms, from the frame `main.bandFrame` works out. Delete either
-  half and the bar is wherever the window system felt like.
+  half and the bar is wherever the window system felt like. On macOS
+  that frame is on the display the POINTER is on (`screen.active`),
+  because a banner on the screen nobody is looking at may as well not
+  have drawn.
+- **The banner window has no shadow.** AppKit gives every window one,
+  and a translucent window shows its own shadow through itself — a black
+  rim on all four sides, heaviest where the soft edge is dissolving. The
+  band draws its own edges, so `setHasShadow:` is turned off with the
+  frame.
 - **A verb's output on Windows has to go and find the terminal.** The
   release binary is GUI-subsystem, so Windows never attaches it to the
   console that launched it and every `say` lands nowhere — measured as a

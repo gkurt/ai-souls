@@ -418,6 +418,19 @@ Everything below was measured on Windows 11.
   `setFrame:display:` in AppKit's global points, whose origin is the
   primary display's BOTTOM-left — which is why `main.bandFrame` hands
   macOS a flipped `y` rather than the descriptor's own.
+- **Which display the banner uses is decided in `screen.zig`,** once,
+  before the window exists, because `update` may not ask the OS anything.
+  On macOS it is the display the pointer is on: a laptop with an external
+  monitor puts the primary under your hands maybe half the time, and a
+  banner nobody is looking at may as well not have drawn. Win32 stays on
+  the primary, which is the display `centre` measures anyway. The size
+  that comes back is also what the type and the band are sized against,
+  so both have to be the same display or the bar spans the wrong width.
+- **The banner window's shadow is turned off.** AppKit shadows every
+  window, and a translucent one shows that shadow through its own
+  pixels: a black rim around all four sides, worst exactly where the
+  soft edge is trying to dissolve into the desktop, which reads as a
+  border drawn around the bar. `setHasShadow:NO` goes on with the frame.
 - **No window this app declares may activate.** `activate_on_show =
   false` on the overlay and on the shell window both — and on the shell
   window it has to be in `app.zon`, because the host creates that one
