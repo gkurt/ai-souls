@@ -127,6 +127,10 @@ fn isRedirect(handle: win.HANDLE) bool {
 }
 
 test "an unset stdout handle is not a redirect" {
+    // Windows-only for the same reason the whole module is, and it is a
+    // compile error rather than a wrong answer: `GetFileType`'s `.winapi`
+    // is `aarch64_aapcs_win`, which no backend will emit for macOS.
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
     // The case that made this module necessary: a GUI-subsystem process
     // launched from a terminal has no usable handle, and every verb's
     // output went nowhere.
