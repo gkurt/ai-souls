@@ -1,3 +1,81 @@
+## ai-souls@0.4.0
+
+### The bar has no border around it any more
+
+macOS was drawing a window shadow behind the banner, and because the bar
+is see-through the shadow showed through its own edges as a black rim on
+all four sides. The soft edges now dissolve into whatever is underneath
+instead of stopping at a line.
+
+### Settings from the command line
+
+`ai-souls set <event>` arms, disarms, and reshapes any event's screen —
+on/off plus `--style`, `--sound`, `--volume`, `--duration`, `--title`,
+and `--subtitle` — and `ai-souls reset <event|all>` puts things back to
+their defaults. `set` prints the row back the way `status` lists it, and
+tells you when arming changed so the hooks need an `install`.
+
+### "Commit made" and "PR created" only fire for a commit and a PR
+
+Both screens were turning up for ordinary Bash calls — a `grep`, an
+`echo` — several times a session. The hook that runs them is narrowed to
+one command, but that filter quietly matches everything for commands
+Claude Code cannot read statically, so `fire` now checks the command
+itself before drawing.
+
+### The Death headline reads as words again
+
+The red was so close to the band behind it that the type came out as a
+warm smudge. It is a touch brighter now, and the same deep blood colour.
+
+### `install` no longer skips a binary that is the same size as the last one
+
+It decided whether the copy your hooks run was up to date from the file's
+size and path alone, so an upgrade that happened to come out the same
+length was reported as installed and never actually copied. Your hooks
+kept running the previous version with nothing to say so.
+
+### Banners land in the middle of the screen on macOS
+
+A screen used to be drawn wherever AppKit felt like putting it, which
+with a second display plugged in meant a bar somewhere off to one side
+with half of it past the edge of the monitor. It now spans the display
+you are working on and sits through the middle of it, the way it always
+did on Windows.
+
+### The settings window is gone, and so is the flash before a banner
+
+Every screen used to open the settings window for a blink before hiding
+it — the app's one required window, put away as fast as the watchers
+could catch it. Now the banner is the app's only window, so there is
+nothing to flash and nothing to hide: a screen appears as the banner,
+already rendered, and nothing else.
+
+Configuration moved to the command line: `ai-souls set <event>` and
+`ai-souls reset <event|all>` change everything the window did, and
+`ai-souls settings` now shows the current settings instead of opening a
+window. Previews are `ai-souls fire <event>` — the real thing.
+
+### A failed tool call no longer draws a screen
+
+It is on the list, one switch away, and everything you have already
+turned on stays on. But it is not armed for a new install: a tool call
+coming back a failure is usually a step in a run that is going fine, and
+the agent has moved on before you have finished reading the banner.
+
+### The commands say something on Windows
+
+`install`, `status`, `events`, every error — all of it printed into the
+void from a terminal, because the app is a windowed program and Windows
+does not hand those the console you ran them from. The install worked;
+it just never told you so. Now it does, accented characters included.
+
+### Instructions you can actually paste
+
+Installed with `npx`? Nothing is left on PATH afterwards, so being told
+to run `ai-souls settings` was a dead end. It now says `npx ai-souls
+settings` when that is what you need.
+
 ## ai-souls@0.3.1
 
 ### Banners never take the keyboard
