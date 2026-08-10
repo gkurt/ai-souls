@@ -39,6 +39,11 @@ declarative native views in Zig, no browser, no WebView, one binary.
 
 ## Getting started
 
+> **Not on npm yet.** Until the first release is published, grab a
+> binary from the
+> [latest CI run](https://github.com/gkurt/ai-souls/actions/workflows/ci.yml)
+> or build one — see [Building it yourself](#building-it-yourself).
+
 ```bash
 npm install -g ai-souls
 ```
@@ -220,6 +225,13 @@ would notice. From there:
 | **`release.yml`** — `v*` tag | Builds both slots, fuses the macOS one, packs the tarball, and drafts a GitHub release with the changelog as its notes and the binaries attached. |
 
 So the decision a human makes is **merging the Version Packages PR**.
+
+That PR gets no CI of its own: GitHub does not trigger workflows for
+pull requests created with `GITHUB_TOKEN`, which is how it avoids
+workflow loops. `main` is protected against force-pushes and deletion
+but does not require status checks, so the PR merges normally. Giving
+Tegami a personal access token instead of `github.token` would make the
+PR run checks like any other.
 
 Two things stay deliberately manual:
 
