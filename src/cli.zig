@@ -512,6 +512,16 @@ fn installHooks(
         , .{ paths.runtime_exe.slice(), command_name }),
         .current, .self => {},
     }
+    // Where to go next. Worth saying because the recommended way in is
+    // `npx ai-souls install`, which leaves nothing on PATH — without
+    // this, the tray is the only route to settings and nothing has
+    // mentioned it.
+    if (installing) say(io,
+        \\
+        \\Screens now fire in every Claude Code session. Settings are in
+        \\the tray, under "Open AI Souls", once one has.
+        \\
+    , .{});
     // Nothing left to answer the hooks, so the copy has no reason to
     // stay. After the settings write, so a failure there leaves a
     // working install rather than a half-dismantled one.

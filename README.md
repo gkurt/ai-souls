@@ -45,18 +45,33 @@ declarative native views in Zig, no browser, no WebView, one binary.
 > or build one — see [Building it yourself](#building-it-yourself).
 
 ```bash
-npm install -g ai-souls
-```
-
-```bash
-ai-souls install
+npx ai-souls install
 ```
 
 That is it. Screens start appearing in every Claude Code session on the
-machine. To see one right now:
+machine, and they keep appearing after npm collects the npx cache —
+`install` puts its own copy in `~/.ai-souls` and points the hooks there,
+so nothing depends on the download surviving. See
+[Why hooks run a copy](#why-hooks-run-a-copy).
+
+Settings live in the tray icon, under **Open AI Souls**. The app appears
+there the first time a screen fires.
+
+### If you want the command as well
+
+The hooks do not need it, but `ai-souls` is nicer to have on your PATH
+than `npx ai-souls` — it is instant rather than ~700 ms, and it works
+offline.
 
 ```bash
-ai-souls "YOU DIED"
+npm install -g ai-souls
+ai-souls install
+```
+
+Either way, to see a screen right now:
+
+```bash
+npx ai-souls "YOU DIED"
 ```
 
 ## The command
@@ -76,8 +91,12 @@ ai-souls serve             run in the tray with no window
 today. It exists so that adding a second one does not change the shape
 of the command line.
 
-`npx ai-souls install` works too — see below for why that is not
-obvious.
+Prefix any of them with `npx` if you did not install globally. That is a
+real install doing real work — `npx ai-souls install` is the
+recommended way in — but it pays npm's resolution cost every time, so
+the verbs you reach for often are worth a global install. See
+[Why hooks run a copy](#why-hooks-run-a-copy) for why an npx install
+outlives its own cache.
 
 Anything that is not a verb is a headline, so quoting is optional and
 `--` forces the issue:
