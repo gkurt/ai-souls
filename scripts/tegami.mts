@@ -12,7 +12,8 @@
 // So the flow is:
 //
 //   1. Write `.tegami/*.md` for the change.
-//   2. `tegami ci` on main opens a Version Packages PR.
+//   2. `tegami ci` on main opens a release PR — `chore: release
+//      v<version>`, see `versionPr.create` below.
 //   3. Merging it bumps `npm/package.json` + `app.zon` and writes
 //      CHANGELOG.md, and `version.yml` pushes a `v<version>` tag.
 //   4. The tag runs `release.yml`, which is where the binaries are.
@@ -101,7 +102,20 @@ const paper = tegami({
     keepGitIdentity(),
     github({
       repo: "gkurt/ai-souls",
-      versionPr: { base: "main" },
+      versionPr: {
+        base: "main",
+        // The release version in the PR title ("chore: release v0.3.1")
+        // rather than Tegami's flat "Version Packages", so the merge
+        // commit on main says which release it was.
+        //
+        // `create` runs AFTER the draft is applied, so the graph already
+        // holds the bumped version — read it straight off. Calling
+        // `bumpVersion` here would bump a second time.
+        create() {
+          const version = this.graph.get("npm:ai-souls")?.version;
+          return { title: version ? `chore: release v${version}` : "chore: release" };
+        },
+      },
       // The release for a tag is created by `release.yml`, which is the
       // only job that has the binaries to attach.
       release: false,

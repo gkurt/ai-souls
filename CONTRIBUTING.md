@@ -268,10 +268,12 @@ would notice. From there:
 | | |
 | --- | --- |
 | **`ci.yml`** — push, PR | `native check`, `native test`, `native build` on Windows and macOS. Keeps each binary as a 14-day artifact, so the macOS build nobody here can compile is always one download away. |
-| **`version.yml`** — push to `main` | `tegami ci` turns pending changelogs into a **Version Packages** PR: bumped `npm/package.json` + `app.zon`, and `CHANGELOG.md`. Merging it pushes a `v<version>` tag and starts the release. |
+| **`version.yml`** — push to `main` | `tegami ci` turns pending changelogs into a **`chore: release v<version>`** PR: bumped `npm/package.json` + `app.zon`, and `CHANGELOG.md`. Merging it pushes a `v<version>` tag and starts the release. |
 | **`release.yml`** — dispatched by `version.yml`, or a `v*` tag pushed by hand | Builds both slots, fuses the macOS one, packs the tarball, drafts a GitHub release with the changelog as its notes, and publishes to npm. |
 
-So the decision a human makes is **merging the Version Packages PR**.
+So the decision a human makes is **merging the release PR**. Its title
+carries the version it is about to cut, rather than Tegami's flat
+"Version Packages", so `main`'s history reads as a list of releases.
 
 Two things stay deliberately manual:
 
@@ -299,7 +301,7 @@ tag is already pushed and one command finishes the job:
 gh workflow run release.yml --ref v0.2.0
 ```
 
-The same rule is why the Version Packages PR gets no CI of its own.
+The same rule is why the release PR gets no CI of its own.
 `main` is protected against force-pushes and deletion but does not
 require status checks, so the PR merges normally. Giving Tegami a
 personal access token instead of `github.token` would fix both at once.

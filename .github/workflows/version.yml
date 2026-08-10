@@ -2,8 +2,9 @@
 #
 # Two steps, both on `main`:
 #
-#   1. `tegami ci` sees `.tegami/*.md` and opens a Version Packages PR
-#      that bumps `npm/package.json` + `app.zon` and writes CHANGELOG.md.
+#   1. `tegami ci` sees `.tegami/*.md` and opens a `chore: release
+#      v<version>` PR that bumps `npm/package.json` + `app.zon` and
+#      writes CHANGELOG.md.
 #   2. Merging that PR lands a new version on main, and the tag job below
 #      pushes `v<version>` and then dispatches `release.yml`, the only
 #      workflow with the binaries. It has to ask explicitly — see the
@@ -32,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the version branch
-      pull-requests: write # open the Version Packages PR
+      pull-requests: write # open the release PR
     steps:
       - uses: actions/checkout@v6
         with:
@@ -60,7 +61,7 @@ jobs:
 
       # Idempotent on purpose: this runs on every push to main, and does
       # nothing at all unless the version on main is one we have never
-      # tagged. That happens exactly when a Version Packages PR merges.
+      # tagged. That happens exactly when a release PR merges.
       - name: Tag if the version is new
         id: tag
         run: |
@@ -81,7 +82,7 @@ jobs:
       # The tag above does NOT start release.yml on its own. Anything
       # pushed with GITHUB_TOKEN is invisible to `on: push`, which is how
       # GitHub stops a workflow triggering itself forever — the same rule
-      # that leaves the Version Packages PR without CI. It cost us the
+      # that leaves the release PR without CI. It cost us the
       # v0.1.0 release: the tag landed and nothing built.
       #
       # `workflow_dispatch` is the one documented exception to that rule,

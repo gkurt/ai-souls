@@ -7,7 +7,7 @@
 # has a win32-x64 slot and nothing else, and the launcher says so
 # plainly on any other platform.
 #
-# `version.yml` starts it: when a Version Packages PR merges, that
+# `version.yml` starts it: when a release PR merges, that
 # workflow pushes the `v*` tag and then dispatches this one against it.
 # The dispatch is not belt-and-braces — a tag pushed with GITHUB_TOKEN
 # never fires `on: push`, so without it nothing here would ever run

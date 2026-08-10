@@ -157,7 +157,8 @@ commands. `scripts/tegami.mts` puts the identity back afterwards, so setting
 `CI=1` to skip the interactive prompts is safe — but if you invoke Tegami some
 other way, check `git config --local --get-regexp '^user\.'` before committing.
 
-The rest is automatic: `version.yml` opens a Version Packages PR, merging it
+The rest is automatic: `version.yml` opens a release PR — titled
+`chore: release v<version>`, so the merge commit on main names it — merging it
 tags `v<version>` and dispatches `release.yml`, which builds both platforms
 and drafts the release. That dispatch is load-bearing — a tag pushed with
 `GITHUB_TOKEN` never fires `on: push`, so nothing would build without it.
