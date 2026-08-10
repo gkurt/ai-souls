@@ -1,12 +1,10 @@
-//! The binary's non-GUI modes.
+//! Every verb — the whole command surface except the banner itself.
 //!
-//! One executable wears several hats. `ai-souls` with no arguments is
-//! the settings window. `ai-souls fire <event>` is what the installed
-//! hooks run: it resolves the event's settings and becomes the banner
-//! itself, for the two seconds the banner is up, and then exits.
-//! `ai-souls install` does the `settings.json` merge, which needs an
-//! allocator and therefore cannot live inside the pure `update` — the
-//! running app reaches it by spawning itself.
+//! One executable wears several hats. `ai-souls fire <event>` is what
+//! the installed hooks run: it resolves the event's settings and
+//! becomes the banner itself, for the two seconds the banner is up, and
+//! then exits. `ai-souls install` does the `settings.json` merge;
+//! `set` and `reset` edit the config the screens are drawn from.
 //!
 //! Nothing stays resident. There is no daemon, no trigger file and no
 //! heartbeat: a screen is a process, and between screens AI Souls is
@@ -53,8 +51,6 @@ pub const Outcome = union(enum) {
     /// A CLI verb ran; `main` should exit with this status.
     handled_ok,
     handled_failed,
-    /// No verb given — run the app, settings window and all.
-    run_app,
     /// Draw this one screen, then exit.
     ///
     /// There is no resident process: the hook's own `ai-souls fire`
@@ -71,7 +67,10 @@ pub fn run(
     args: []const []const u8,
     paths: *const paths_mod.Paths,
 ) Outcome {
-    if (args.len < 2) return .run_app;
+    if (args.len < 2) {
+        printUsage(io);
+        return .handled_ok;
+    }
 
     const verb = args[1];
     const rest = args[2..];
@@ -85,7 +84,10 @@ pub fn run(
     // but a script or a muscle memory might.
     if (eq(verb, "install-hooks")) return hooksVerb(gpa, io, paths, rest, true);
     if (eq(verb, "uninstall-hooks")) return hooksVerb(gpa, io, paths, rest, false);
-    if (eq(verb, "settings")) return .run_app;
+    // What used to open the settings window. The window is gone —
+    // `set` is the settings now — but the muscle memory deserves the
+    // next best thing rather than a headline reading "settings".
+    if (eq(verb, "settings")) return status(io, paths);
     if (eq(verb, "fire")) return fire(io, paths, rest);
     if (eq(verb, "status")) return status(io, paths);
     if (eq(verb, "events")) return listEvents(io);
@@ -112,10 +114,9 @@ fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-/// Everything the CLI says goes to stdout, including its failures: the
-/// running app spawns these verbs and streams their stdout into the
-/// settings window's status line, so a message on stderr would be
-/// invisible to the person who pressed the button.
+/// Everything the CLI says goes to stdout, including its failures:
+/// one stream keeps redirection simple, and nothing here is chatty
+/// enough to need two.
 ///
 /// ONE writer for the whole process, not one per call. A file writer
 /// carries its own position, so opening a fresh one per line starts
@@ -406,8 +407,7 @@ fn installHooks(
                     \\path. Nothing was written.
                     \\
                 , .{}),
-                runtime_copy.Error.CopyFailed => say(
-                    io,
+                runtime_copy.Error.CopyFailed => say(io,
                     \\Could not put a copy of this binary in {s}.
                     \\
                     \\Nothing was written: a hook pointing at {s}
@@ -447,8 +447,8 @@ fn installHooks(
             \\The hooks are installed and working, but the copy they run
             \\could not be replaced with this build — something has
             \\{s}
-            \\open, almost certainly a running AI Souls. Quit it from the
-            \\tray and run `{s} install` again to catch it up.
+            \\open, almost certainly a banner still on screen. Let it
+            \\pass and run `{s} install` again to catch it up.
             \\
         , .{ paths.runtime_exe.slice(), invocation(paths) }),
         .current, .self => {},
@@ -462,9 +462,11 @@ fn installHooks(
         \\Nothing stays running between them — each screen is its own
         \\short-lived process. To change what they say:
         \\
-        \\  {s} settings
+        \\  {s} set turn_complete --title "YOU DIED"
         \\
-    , .{invocation(paths)});
+        \\`{s} status` lists every event and its screen.
+        \\
+    , .{ invocation(paths), invocation(paths) });
     // Nothing left to answer the hooks, so the copy has no reason to
     // stay. After the settings write, so a failure there leaves a
     // working install rather than a half-dismantled one.
@@ -704,12 +706,10 @@ fn writeConfig(io: std.Io, paths: *const paths_mod.Paths, config: *const config_
 }
 
 fn printUsage(io: std.Io) void {
-    say(
-        io,
+    say(io,
         \\AI Souls — Dark Souls screens for your coding agent
         \\
         \\  ai-souls <message>         put a headline on screen
-        \\  ai-souls settings          open the settings window
         \\  ai-souls install [agent]   write the enabled hooks into the agent's settings
         \\  ai-souls uninstall [agent] remove every AI Souls hook
         \\  ai-souls status            show paths and the current per-event settings

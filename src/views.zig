@@ -1,18 +1,13 @@
-//! Both windows' widget trees.
-//!
-//! `settingsView` builds the app's shell window; `overlayView` builds
-//! the screen that flashes over everything else. They share a model and
-//! nothing else — the overlay has no controls at all, because its window
-//! is click-through and could not receive a press if it wanted one.
+//! The banner's widget tree — the screen that flashes over everything
+//! else. It has no controls at all, because its window is click-through
+//! and could not receive a press if it wanted one.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
 const canvas = native_sdk.canvas;
 
 const app = @import("app.zig");
-const config_mod = @import("config.zig");
 const souls = @import("souls.zig");
-const throttle = @import("throttle.zig");
 
 const Model = app.Model;
 const Msg = app.Msg;
@@ -22,8 +17,6 @@ const Node = Ui.Node;
 fn ink(rgb: [3]u8) canvas.Color {
     return canvas.Color.rgb8(rgb[0], rgb[1], rgb[2]);
 }
-
-// ------------------------------------------------------------ overlay
 
 /// The bar behind the headline. Dark enough to read against a bright
 /// editor, translucent enough that you can still see what you were
@@ -99,9 +92,9 @@ fn smoothstep(t: f32) f32 {
 
 pub fn overlayView(ui: *Ui, model: *const Model) Node {
     const overlay = &model.overlay;
-    // The window outlives any one screen (see `declaredWindows`), so an
-    // idle overlay paints literally nothing.
-    if (!overlay.active) return ui.column(.{ .grow = 1 }, .{});
+    // The window is there before the screen starts and stays through
+    // the fade-out's end, so an idle overlay paints literally nothing.
+    if (!overlay.active) return blankView(ui);
 
     const entry = &overlay.entry;
     const opacity = overlay.opacity();
@@ -143,284 +136,8 @@ pub fn overlayView(ui: *Ui, model: *const Model) Node {
     });
 }
 
-// ----------------------------------------------------------- settings
-
-pub fn settingsView(ui: *Ui, model: *const Model) Node {
-    return ui.column(.{ .grow = 1 }, .{
-        header(ui, model),
-        ui.el(.separator, .{}, .{}),
-        ui.row(.{ .grow = 1 }, .{
-            catalogPane(ui, model),
-            ui.el(.separator, .{}, .{}),
-            detailPane(ui, model),
-        }),
-        ui.el(.separator, .{}, .{}),
-        footer(ui, model),
-    });
-}
-
-fn header(ui: *Ui, model: *const Model) Node {
-    return ui.row(.{ .padding = 16, .gap = 12, .cross = .center }, .{
-        ui.text(.{ .size = .heading }, "AI Souls"),
-        // Claude Code is the only agent wired up so far; naming it here
-        // is the honest version of a product name that does not.
-        ui.text(.{ .style_tokens = .{ .foreground = .text_muted } }, "Claude Code"),
-        ui.spacer(1),
-        ui.el(.badge, .{
-            .text = ui.fmt("{d} of {d} armed", .{ model.enabledCount(), souls.event_count }),
-        }, .{}),
-    });
-}
-
-fn catalogPane(ui: *Ui, model: *const Model) Node {
-    var rows: [souls.event_count]Node = undefined;
-    for (souls.events, 0..) |event, index| {
-        const entry = &model.config.events[index];
-        rows[index] = ui.listItem(.{
-            .key = .{ .index = index },
-            .selected = index == model.selected,
-            .on_press = Msg{ .select = index },
-            // A lit ember versus a dark one.
-            .icon = if (entry.enabled) "circle-dot" else "moon",
-            .semantics = .{
-                .role = .listitem,
-                .list_item_index = @intCast(index),
-                .list_item_count = @intCast(souls.event_count),
-            },
-        }, event.label);
-    }
-
-    return ui.scroll(.{ .width = 236 }, .{
-        ui.column(.{ .padding = 8, .gap = 2 }, .{rows[0..]}),
-    });
-}
-
-fn detailPane(ui: *Ui, model: *const Model) Node {
-    const event = model.selectedEvent();
-    const entry = model.selectedSettings();
-
-    const volume_fraction: f32 = @as(f32, @floatFromInt(entry.volume)) / 100.0;
-    const duration_span: f32 = @floatFromInt(config_mod.max_duration_ms - config_mod.min_duration_ms);
-    const duration_fraction: f32 =
-        @as(f32, @floatFromInt(entry.duration_ms - config_mod.min_duration_ms)) / duration_span;
-
-    return ui.scroll(.{ .grow = 1 }, .{
-        ui.column(.{ .padding = 20, .gap = 16 }, .{
-            ui.column(.{ .gap = 4 }, .{
-                ui.text(.{ .size = .lg }, event.label),
-                ui.text(.{
-                    .wrap = true,
-                    .style_tokens = .{ .foreground = .text_muted },
-                }, event.blurb),
-                ui.text(.{
-                    .wrap = true,
-                    .style_tokens = .{ .foreground = .text_muted },
-                }, ui.fmt("hook: {s}{s}{s}", .{
-                    event.hook_event,
-                    if (event.matcher.len > 0) " · matcher " else "",
-                    // `api_error`'s real matcher is an eight-way
-                    // alternation; nobody needs to read that here.
-                    if (event.matcher_label.len > 0) event.matcher_label else event.matcher,
-                })),
-                // Only the events with a window of their own. That no
-                // screen ever draws over another is true of all of them
-                // and belongs in the README, not on every row.
-                if (event.throttle_ms == 0) ui.spacer(0) else ui.text(.{
-                    .wrap = true,
-                    .style_tokens = .{ .foreground = .text_muted },
-                }, ui.fmt("This one arrives in bursts — at most one screen every {d}s.", .{
-                    event.throttle_ms / 1000,
-                })),
-                // Counted, not numbered: the rank only means anything
-                // against the other rows, and nobody is going to hold
-                // sixteen integers in their head to read one of them.
-                // Absent where the ranking cannot fire at all, rather
-                // than promising something the platform will not do.
-                if (!throttle.can_preempt) ui.spacer(0) else ui.text(.{
-                    .wrap = true,
-                    .style_tokens = .{ .foreground = .text_muted },
-                }, ui.fmt("Wins against {d} of the other {d} events when two land at once.", .{
-                    outrankedCount(event.priority),
-                    souls.event_count - 1,
-                })),
-            }),
-
-            ui.row(.{ .gap = 10, .cross = .center }, .{
-                ui.el(.switch_control, .{
-                    .checked = entry.enabled,
-                    .on_toggle = Msg.toggle_enabled,
-                    .semantics = .{ .label = "Show a screen for this event" },
-                }, .{}),
-                ui.text(.{ .grow = 1 }, if (entry.enabled)
-                    "Armed — a hook will be installed for this."
-                else
-                    "Silent — no hook for this event."),
-            }),
-
-            ui.el(.separator, .{}, .{}),
-
-            fieldLabel(ui, "Headline"),
-            ui.textField(.{
-                .text = entry.title.slice(),
-                // The shipped headline is the event's own name; the
-                // placeholder says so rather than inventing a third
-                // string to explain it.
-                .placeholder = event.default_title,
-                .on_input = Ui.inputMsg(.title_edit),
-                .semantics = .{ .label = "Headline" },
-            }),
-
-            fieldLabel(ui, "Subtitle"),
-            ui.textField(.{
-                .text = entry.subtitle.slice(),
-                .placeholder = "(optional)",
-                .on_input = Ui.inputMsg(.subtitle_edit),
-                .semantics = .{ .label = "Subtitle" },
-            }),
-
-            ui.el(.separator, .{}, .{}),
-
-            pickerRow(
-                ui,
-                "Style",
-                entry.style.label(),
-                Msg.cycle_style_back,
-                Msg.cycle_style,
-                swatch(ui, entry.style),
-            ),
-            pickerRow(
-                ui,
-                "Sound",
-                entry.sound.label(),
-                Msg.cycle_sound_back,
-                Msg.cycle_sound,
-                ui.spacer(0),
-            ),
-
-            sliderRow(
-                ui,
-                ui.fmt("Volume · {d}%", .{entry.volume}),
-                volume_fraction,
-                Ui.valueMsg(.volume_changed),
-            ),
-            // Cycling the sound deliberately leaves the duration alone —
-            // it is the user's number once they have touched it — so
-            // the label is where a sound that outlasts its screen owns
-            // up to being cut off. "Reset to default" sizes it to fit.
-            sliderRow(
-                ui,
-                if (entry.sound.durationMs() > entry.duration_ms) ui.fmt(
-                    "On screen · {d}.{d:0>1}s — {s} runs {d}.{d:0>1}s and gets cut off",
-                    .{
-                        entry.duration_ms / 1000,
-                        (entry.duration_ms % 1000) / 100,
-                        entry.sound.label(),
-                        entry.sound.durationMs() / 1000,
-                        (entry.sound.durationMs() % 1000) / 100,
-                    },
-                ) else ui.fmt("On screen · {d}.{d:0>1}s", .{
-                    entry.duration_ms / 1000,
-                    (entry.duration_ms % 1000) / 100,
-                }),
-                duration_fraction,
-                Ui.valueMsg(.duration_changed),
-            ),
-
-            ui.row(.{ .gap = 8 }, .{
-                ui.button(.{ .variant = .secondary, .on_press = Msg.preview, .icon = "play" }, "Preview"),
-                ui.button(.{ .variant = .ghost, .on_press = Msg.reset_event }, "Reset to default"),
-            }),
-        }),
-    });
-}
-
-/// How many catalog rows this rank strictly beats. Ties are not wins —
-/// two screens of equal rank leave each other alone — so this counts
-/// the same way `throttle.outranks` decides.
-fn outrankedCount(priority: u8) usize {
-    var beaten: usize = 0;
-    for (souls.events) |other| {
-        if (other.priority < priority) beaten += 1;
-    }
-    return beaten;
-}
-
-fn fieldLabel(ui: *Ui, text: []const u8) Node {
-    return ui.text(.{ .size = .sm, .style_tokens = .{ .foreground = .text_muted } }, text);
-}
-
-fn swatch(ui: *Ui, style: souls.Style) Node {
-    return ui.el(.panel, .{
-        .width = 22,
-        .height = 22,
-        .style = .{ .background = ink(style.ink()), .radius = 4 },
-        .semantics = .{ .label = "Style colour" },
-    }, .{});
-}
-
-fn pickerRow(
-    ui: *Ui,
-    label: []const u8,
-    value: []const u8,
-    back: Msg,
-    forward: Msg,
-    trailing: Node,
-) Node {
-    return ui.row(.{ .gap = 10, .cross = .center }, .{
-        ui.text(.{ .width = 60, .style_tokens = .{ .foreground = .text_muted } }, label),
-        ui.button(.{
-            .size = .sm,
-            .variant = .outline,
-            .icon = "chevron-left",
-            .on_press = back,
-            .semantics = .{ .label = "Previous" },
-        }, ""),
-        ui.text(.{ .width = 96, .text_alignment = .center }, value),
-        ui.button(.{
-            .size = .sm,
-            .variant = .outline,
-            .icon = "chevron-right",
-            .on_press = forward,
-            .semantics = .{ .label = "Next" },
-        }, ""),
-        trailing,
-        ui.spacer(1),
-    });
-}
-
-fn sliderRow(ui: *Ui, label: []const u8, fraction: f32, on_value: Ui.ValueMsgFn) Node {
-    return ui.column(.{ .gap = 6 }, .{
-        fieldLabel(ui, label),
-        ui.el(.slider, .{
-            .value = std.math.clamp(fraction, 0, 1),
-            .on_value = on_value,
-            .semantics = .{ .label = label },
-        }, .{}),
-    });
-}
-
-fn footer(ui: *Ui, model: *const Model) Node {
-    return ui.column(.{ .padding = 12, .gap = 8 }, .{
-        ui.row(.{ .gap = 8, .cross = .center }, .{
-            ui.button(.{
-                .variant = .primary,
-                .disabled = model.hooks_busy,
-                .on_press = Msg.install_hooks,
-                .icon = "save",
-            }, "Write hooks"),
-            ui.button(.{
-                .variant = .outline,
-                .disabled = model.hooks_busy,
-                .on_press = Msg.uninstall_hooks,
-            }, "Remove all hooks"),
-            ui.spacer(1),
-            ui.text(.{ .size = .sm, .style_tokens = .{ .foreground = .text_muted } }, "~/.claude/settings.json"),
-        }),
-        ui.el(.status_bar, .{
-            .text = if (model.status.len > 0)
-                model.status.slice()
-            else
-                "Settings save themselves. Write hooks after changing which events are armed.",
-        }, .{}),
-    });
+/// Nothing at all — what the shell band paints in opaque mode, where
+/// the declared window draws the banner instead.
+pub fn blankView(ui: *Ui) Node {
+    return ui.column(.{ .grow = 1 }, .{});
 }

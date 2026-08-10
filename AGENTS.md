@@ -38,12 +38,12 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/souls.zig` | the comptime event catalog and the sound bank |
 | `src/config.zig` | allocation-free config codec for `config.txt` |
 | `src/throttle.zig` | the on-disk record of when each event last drew, and the rules over it — the floor, the ranking, the per-event window |
-| `src/cli.zig` | every non-GUI verb (`install`, `fire`, `status`, …) and the trigger handshake |
+| `src/cli.zig` | every verb but the banner itself (`install`, `fire`, `set`, `status`, …) |
 | `src/console.zig` | where CLI output goes on Windows, where a GUI-subsystem binary has no terminal to print to |
 | `src/hooks.zig` | the JSON merge into `~/.claude/settings.json` |
 | `src/paths.zig` | every path the app knows, resolved once |
 | `src/runtime_copy.zig` | the copy under `~/.ai-souls/bin` that installed hooks actually run |
-| `src/views.zig` | both windows' widget trees |
+| `src/views.zig` | the banner's widget tree |
 | `src/screen.zig` | which display a banner is drawn on, and how big it is — read once in `main` |
 | `src/overlay_style.zig` | the raw Win32 and AppKit the SDK does not expose |
 | `src/tests.zig` | end-to-end tests over the real update loop |
@@ -75,21 +75,25 @@ Invariants worth knowing before you change things:
 - **A screen is a process.** `fire` resolves the event and becomes the banner;
   when the overlay ends it calls `fx.quitApp()`. Nothing is resident, so any
   new timer or poll you add runs on someone's machine only while a banner is
-  up — keep it that way.
-- **The settings window is hidden with a raw `SW_HIDE` in a screen process,**
-  `orderOut:` on macOS, never `fx.closeWindow`: a runtime-initiated close
-  really destroys the window and stops the app, which would kill the banner.
-  Both wait for the window to be visible first — the host's own reveal
-  would undo an earlier hide.
+  up — keep it that way. There is no settings window: configuration is the
+  `set`/`reset`/`status` verbs over `config.txt`.
+- **The band IS the shell window, and its flags are fixed in `app.zon`.**
+  The host creates the startup window from the manifest at comptime,
+  before any app code runs, and fixes `transparent`, `click_through`,
+  `always_on_top`, the chromeless titlebar and `activate_on_show` at
+  create. The scene `main` builds only re-applies size and title — the
+  parts that depend on the display. Because it is a canvas window it is
+  created ordered-out and revealed after its first frame presents, so
+  nothing ever flashes on screen but the banner itself. The one thing
+  the manifest's comptime transparency costs is `AI_SOULS_OPAQUE`: that
+  mode draws in a second, opaque window declared from the model
+  (`main.declaredWindows`) while the shell band paints nothing.
 - **No window this app declares may activate.** `activate_on_show =
-  false` on the overlay AND on the shell window — in `app.zon` too, since
-  the host creates that one before any app code runs. A banner's process
-  gets a shell window like every other, and its reveal taking the
-  keyboard is the whole bug. It costs the settings window its focus on
-  open, which is the trade; there is no `focusWindow` effect to undo it
-  with. A screen process additionally drops to
-  `NSApplicationActivationPolicyAccessory` so it has no Dock tile and no
-  Cmd-Tab entry — screen processes only, or the settings app loses both.
+  false` on every window — in `app.zon` for the shell band, since the
+  host creates that one before any app code runs. A banner appearing
+  over the editor you are typing into must never take the keyboard.
+  Every process also drops to `NSApplicationActivationPolicyAccessory`
+  on macOS, so it has no Dock tile and no Cmd-Tab entry.
 - **No host applies the overlay descriptor's `x`/`y`.** Win32 passes
   `CW_USEDEFAULT`; macOS takes the size and puts the window where AppKit
   likes, which with a second display attached is not on the right one.
@@ -122,12 +126,13 @@ Invariants worth knowing before you change things:
   test enforces it. They all stay pickable.
 - **`Event.priority` is what lets a screen replace one still on
   screen,** and replacing means `overlay_style.dismissOthers`
-  terminating the other process. Two consequences: a banner's window
-  title must stay distinct from the settings window's overlay title, or
-  a hook takes the settings app down with it; and preemption is gated
-  on `overlay_style.can_dismiss`, Win32-only, because drawing two
-  banners over each other is worse than missing one. New rows must
-  choose a rank — the field has no default on purpose.
+  terminating the other process. Two consequences: the shell band and
+  the opaque-mode window carry distinct titles, and a dismisser hunts
+  both, so neither kind of banner survives being outranked; and
+  preemption is gated on `overlay_style.can_dismiss`, Win32-only,
+  because drawing two banners over each other is worse than missing
+  one. New rows must choose a rank — the field has no default on
+  purpose.
 
 ## Releasing
 

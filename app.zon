@@ -8,33 +8,43 @@
     .version = "0.3.1",
     .icons = .{"assets/icon.png"},
     .platforms = .{ "macos", "windows", "linux" },
-    .permissions = .{ "view", "command" },
+    .permissions = .{"view"},
     // No tray: nothing survives a screen, so a status item would appear
     // for the 2.6 seconds a banner is up and vanish with it.
     .capabilities = .{ "native_views", "gpu_surfaces" },
     .shell = .{
         .windows = .{
+            // The banner IS the app's one window. The host creates it
+            // from this declaration before any app code runs, ordered
+            // out until its first frame has rendered — so nothing ever
+            // flashes on screen but the banner itself. The size here is
+            // nominal: the scene re-declares it against the real
+            // display, and `overlay_style` places it (no host applies a
+            // declared position — see `main.bandFrame`).
             .{
                 .label = "main",
-                .title = "AI Souls",
-                .width = 900,
-                .height = 640,
-                .min_width = 780,
-                .min_height = 520,
+                .title = "AI Souls Screen",
+                .width = 1440,
+                .height = 260,
+                .resizable = false,
                 .restore_state = false,
-                .restore_policy = "center_on_primary",
-                // Nothing this app opens may take the keyboard. This
-                // window is created in EVERY process, including the ones
-                // that exist only to flash a banner — and its reveal
-                // activating the app is how a hook used to steal focus
-                // from whatever you were typing into. The cost is that
-                // `ai-souls settings` opens unfocused; click it once.
+                // No caption, no frame — Windows also requires a
+                // chromeless style before it accepts a transparent
+                // surface.
+                .titlebar = "chromeless",
+                // The band floats over the desktop; the premultiplied
+                // alpha mode below is the other half of that.
+                .transparent = true,
+                .always_on_top = true,
+                // The whole point: clicks land on whatever is under it.
+                .click_through = true,
+                // Never take the keyboard. A banner appearing over the
+                // editor you are typing into must not steal focus, and
+                // this window exists in every process of this binary.
                 .activate_on_show = false,
-                // Closing the settings window ends the process. There is
-                // nothing for it to go on doing.
                 .close_policy = "quit",
                 .views = .{
-                    .{ .label = "settings-canvas", .kind = "gpu_surface", .fill = true, .role = "Settings canvas", .accessibility_label = "AI Souls settings", .gpu_pixel_format = "bgra8_unorm", .gpu_present_mode = "timer", .gpu_alpha_mode = "opaque", .gpu_color_space = "srgb", .gpu_vsync = true },
+                    .{ .label = "overlay-canvas", .kind = "gpu_surface", .fill = true, .role = "Banner", .accessibility_label = "AI Souls screen", .gpu_pixel_format = "bgra8_unorm", .gpu_present_mode = "timer", .gpu_alpha_mode = "premultiplied", .gpu_color_space = "srgb", .gpu_vsync = true },
                 },
             },
         },

@@ -5,7 +5,6 @@
 //! window that appears, and a process that goes away with it.
 
 const std = @import("std");
-const native_sdk = @import("native_sdk");
 
 const app = @import("app.zig");
 const cli = @import("cli.zig");
@@ -29,7 +28,7 @@ const Harness = struct {
         effects.executor = .fake;
         var model: app.Model = .{};
         model.paths.config.set("/tmp/ai-souls-test/config.txt");
-            model.paths.exe.set("/tmp/ai-souls-test/ai-souls");
+        model.paths.exe.set("/tmp/ai-souls-test/ai-souls");
         return .{ .model = model, .effects = effects, .allocator = allocator };
     }
 
@@ -38,12 +37,23 @@ const Harness = struct {
         self.allocator.destroy(self.effects);
     }
 
-    fn send(self: *Harness, msg: app.Msg) void {
-        app.update(&self.model, msg, self.effects);
+    /// What `main` does with a resolved screen: hand it to the model
+    /// and let `init` open it.
+    fn boot(self: *Harness, entry: config_mod.EventSettings) void {
+        self.model.entry = entry;
+        app.init(&self.model, self.effects);
     }
 
-    fn fileResult(key: u64, bytes: []const u8) native_sdk.EffectFileResult {
-        return .{ .key = key, .op = .read, .outcome = .ok, .bytes = bytes };
+    /// The default screen most lifecycle tests need — a headline and
+    /// nothing else.
+    fn bootTitled(self: *Harness, title: []const u8) void {
+        var entry: config_mod.EventSettings = .{};
+        entry.title.set(title);
+        self.boot(entry);
+    }
+
+    fn send(self: *Harness, msg: app.Msg) void {
+        app.update(&self.model, msg, self.effects);
     }
 };
 
@@ -118,11 +128,11 @@ test "set changes a screen the way the flags say" {
     paths.config.set(try tmpConfigPath(&tmp, &dir_buffer, &file_buffer));
 
     const set = &.{
-        "ai-souls",          "set",     "tool_failed",
-        "on",                "--style", "bonfire",
-        "--sound",           "gong",    "--volume",
-        "55",                "--duration", "3000",
-        "--title",           "BONFIRE LIT", "--subtitle",
+        "ai-souls",  "set",         "tool_failed",
+        "on",        "--style",     "bonfire",
+        "--sound",   "gong",        "--volume",
+        "55",        "--duration",  "3000",
+        "--title",   "BONFIRE LIT", "--subtitle",
         "rest here",
     };
     try testing.expect(cli.run(testing.allocator, testing.io, set, &paths) == .handled_ok);
@@ -363,10 +373,16 @@ test "a message becomes the screen it describes, with no catalog vote" {
     }
 }
 
-test "settings asks for the window, not a screen" {
-    var paths: @import("paths.zig").Paths = .{};
+test "settings is the CLI now, and says so with the status listing" {
+    var paths: paths_mod.Paths = .{};
     const outcome = cli.run(testing.allocator, testing.io, &.{ "ai-souls", "settings" }, &paths);
-    try testing.expect(outcome == .run_app);
+    try testing.expect(outcome == .handled_ok);
+}
+
+test "with no arguments the CLI explains itself and exits cleanly" {
+    var paths: paths_mod.Paths = .{};
+    const outcome = cli.run(testing.allocator, testing.io, &.{"ai-souls"}, &paths);
+    try testing.expect(outcome == .handled_ok);
 }
 
 test "a screen process is already showing its banner by the end of init" {
@@ -375,29 +391,10 @@ test "a screen process is already showing its banner by the end of init" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    var entry: config_mod.EventSettings = .{};
-    entry.title.set("YOU DIED");
-    harness.model.screen_only = entry;
-
-    app.init(&harness.model, harness.effects);
+    harness.bootTitled("YOU DIED");
 
     try testing.expect(harness.model.overlay.active);
     try testing.expectEqualStrings("YOU DIED", harness.model.overlay.entry.title.slice());
-}
-
-test "a settings process opens no screen and reads its config" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    app.init(&harness.model, harness.effects);
-
-    try testing.expect(!harness.model.overlay.active);
-    var index: usize = 0;
-    var read_config = false;
-    while (harness.effects.pendingFileAt(index)) |request| : (index += 1) {
-        if (request.op == .read and std.mem.endsWith(u8, request.path, "config.txt")) read_config = true;
-    }
-    try testing.expect(read_config);
 }
 
 test "a screen process exits with its banner" {
@@ -405,11 +402,7 @@ test "a screen process exits with its banner" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    var entry: config_mod.EventSettings = .{};
-    entry.title.set("YOU DIED");
-    entry.duration_ms = 2600;
-    harness.model.screen_only = entry;
-    app.init(&harness.model, harness.effects);
+    harness.bootTitled("YOU DIED");
 
     const before = harness.effects.window_action_state.quit_count;
     harness.model.overlay.started_ms -= 5000; // past its own end
@@ -419,28 +412,11 @@ test "a screen process exits with its banner" {
     try testing.expect(harness.effects.window_action_state.quit_count > before);
 }
 
-test "the settings window does not quit when a preview ends" {
-    // Same code path, opposite answer: a preview from the settings
-    // window must not take the window down with it.
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.preview);
-    try testing.expect(harness.model.overlay.active);
-
-    const before = harness.effects.window_action_state.quit_count;
-    harness.model.overlay.started_ms -= @intCast(harness.model.overlay.duration_ms + 50);
-    harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .fired } });
-
-    try testing.expect(!harness.model.overlay.active);
-    try testing.expectEqual(before, harness.effects.window_action_state.quit_count);
-}
-
 test "the overlay closes itself once its duration elapses" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.send(.preview);
+    harness.bootTitled("YOU DIED");
     try testing.expect(harness.model.overlay.active);
 
     // Rewind the start so the next tick lands past the end.
@@ -454,7 +430,7 @@ test "the overlay stays up mid-flight" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.send(.preview);
+    harness.bootTitled("YOU DIED");
     harness.model.overlay.started_ms -= 100;
     harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .fired } });
 
@@ -470,7 +446,7 @@ test "an audio event advances the overlay too" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.send(.preview);
+    harness.bootTitled("YOU DIED");
     harness.model.overlay.started_ms -= 100;
     harness.send(.{ .audio_event = .{ .key = 30, .kind = .position } });
 
@@ -483,7 +459,7 @@ test "an audio event can also end the screen" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.send(.preview);
+    harness.bootTitled("YOU DIED");
     harness.model.overlay.started_ms -= @intCast(harness.model.overlay.duration_ms + 50);
     harness.send(.{ .audio_event = .{ .key = 30, .kind = .position } });
 
@@ -496,11 +472,10 @@ test "the sound waits until the fade has drawn" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    const index = souls.indexOfKey("tool_failed").?;
-    harness.model.selected = index;
-    try testing.expect(harness.model.config.events[index].sound != .none);
+    var entry: config_mod.EventSettings = .{ .sound = .you_died };
+    entry.title.set("YOU DIED");
+    harness.boot(entry);
 
-    harness.send(.preview);
     try testing.expect(harness.model.overlay.active);
     // Nothing has been asked to play yet.
     try testing.expectEqual(@as(usize, 0), harness.model.last_sound_path.len);
@@ -513,8 +488,9 @@ test "a sound due after its screen ended never plays" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.model.selected = souls.indexOfKey("tool_failed").?;
-    harness.send(.preview);
+    var entry: config_mod.EventSettings = .{ .sound = .you_died };
+    entry.title.set("YOU DIED");
+    harness.boot(entry);
     harness.model.overlay.started_ms -= @intCast(harness.model.overlay.duration_ms + 50);
     harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .fired } });
     try testing.expect(!harness.model.overlay.active);
@@ -529,8 +505,9 @@ test "a screen frozen past its fade-out still fades out" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.model.selected = souls.indexOfKey("tool_failed").?;
-    harness.send(.preview);
+    var entry: config_mod.EventSettings = .{ .sound = .you_died };
+    entry.title.set("YOU DIED");
+    harness.boot(entry);
     const duration = harness.model.overlay.duration_ms;
 
     // Two seconds pass with the loop dead: no advance happened, so both
@@ -557,151 +534,10 @@ test "a rejected timer fire changes nothing" {
     var harness = try Harness.init(testing.allocator);
     defer harness.deinit();
 
-    harness.send(.preview);
+    harness.bootTitled("YOU DIED");
     const before = harness.model.overlay.elapsed_ms;
     harness.send(.{ .anim_tick = .{ .key = 2, .outcome = .rejected } });
 
     try testing.expect(harness.model.overlay.active);
     try testing.expectEqual(before, harness.model.overlay.elapsed_ms);
-}
-
-test "toggling an event writes the config back out" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    const enabled_before = harness.model.config.events[0].enabled;
-    harness.send(.toggle_enabled);
-
-    try testing.expectEqual(!enabled_before, harness.model.config.events[0].enabled);
-    try testing.expect(harness.effects.pendingFileCount() > 0);
-}
-
-test "typing edits the selected event's headline" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .select = 0 });
-    harness.send(.{ .title_edit = .clear });
-    harness.send(.{ .title_edit = .{ .insert_text = "ASH" } });
-
-    try testing.expectEqualStrings("ASH", harness.model.config.events[0].title.slice());
-
-    harness.send(.{ .title_edit = .delete_backward });
-    try testing.expectEqualStrings("AS", harness.model.config.events[0].title.slice());
-}
-
-test "reset restores an event to its catalog default" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .select = 0 });
-    harness.send(.{ .title_edit = .clear });
-    harness.send(.reset_event);
-
-    try testing.expectEqualStrings(
-        souls.events[0].default_title,
-        harness.model.config.events[0].title.slice(),
-    );
-}
-
-test "the volume slider maps its fraction onto 0..100" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .volume_changed = 0.25 });
-    try testing.expectEqual(@as(u8, 25), harness.model.config.events[0].volume);
-
-    harness.send(.{ .volume_changed = 2.0 }); // out of range clamps
-    try testing.expectEqual(@as(u8, 100), harness.model.config.events[0].volume);
-}
-
-test "the duration slider stays inside the allowed span" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .duration_changed = 0 });
-    try testing.expectEqual(config_mod.min_duration_ms, harness.model.config.events[0].duration_ms);
-
-    harness.send(.{ .duration_changed = 1 });
-    try testing.expectEqual(config_mod.max_duration_ms, harness.model.config.events[0].duration_ms);
-}
-
-test "loading a saved config replaces the defaults" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .config_loaded = Harness.fileResult(
-        10,
-        "e session_start 0 0 0 10 900 GONE|\n",
-    ) });
-
-    try testing.expect(!harness.model.config.events[0].enabled);
-    try testing.expectEqualStrings("GONE", harness.model.config.events[0].title.slice());
-    try testing.expect(!harness.model.dirty);
-}
-
-test "a missing config file leaves the defaults in place" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .config_loaded = .{ .key = 10, .op = .read, .outcome = .not_found } });
-
-    try testing.expectEqualStrings(
-        souls.events[0].default_title,
-        harness.model.config.events[0].title.slice(),
-    );
-    try testing.expectEqual(@as(usize, 0), harness.model.status.len);
-}
-
-test "a failed hook run reports rather than hanging the buttons" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.install_hooks);
-    try testing.expect(harness.model.hooks_busy);
-
-    harness.send(.{ .hooks_exit = .{ .key = 20, .code = 1, .reason = .exited } });
-    try testing.expect(!harness.model.hooks_busy);
-    try testing.expect(harness.model.status.len > 0);
-}
-
-test "the hook CLI's own summary line becomes the status line" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.install_hooks);
-    harness.send(.{ .hooks_line = .{ .key = 20, .line = "6 hooks written, 0 removed — /home/x/.claude/settings.json\n" } });
-    harness.send(.{ .hooks_exit = .{ .key = 20, .code = 0, .reason = .exited } });
-
-    try testing.expectEqualStrings(
-        "6 hooks written, 0 removed — /home/x/.claude/settings.json",
-        harness.model.status.slice(),
-    );
-}
-
-test "selecting an event moves the carets to that event's text" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    harness.send(.{ .select = 3 });
-    try testing.expectEqual(@as(usize, 3), harness.model.selected);
-    try testing.expectEqual(
-        harness.model.config.events[3].title.len,
-        harness.model.title_selection.focus,
-    );
-}
-
-test "style and sound cycle both ways without falling off the ends" {
-    var harness = try Harness.init(testing.allocator);
-    defer harness.deinit();
-
-    var index: usize = 0;
-    while (index < souls.Style.count + 2) : (index += 1) harness.send(.cycle_style);
-    while (index > 0) : (index -= 1) harness.send(.cycle_style_back);
-    try testing.expectEqual(souls.events[0].default_style, harness.model.config.events[0].style);
-
-    index = 0;
-    while (index < souls.Sound.count + 2) : (index += 1) harness.send(.cycle_sound);
-    while (index > 0) : (index -= 1) harness.send(.cycle_sound_back);
-    try testing.expectEqual(souls.events[0].default_sound, harness.model.config.events[0].sound);
 }

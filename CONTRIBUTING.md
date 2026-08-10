@@ -31,8 +31,8 @@ extension runs it on save, and nothing in CI checks style.
 allocation-free codec (so `update` can parse and serialize without an
 allocator), `src/throttle.zig` the on-disk record of when each event
 last drew, `src/app.zig` the whole Model/Msg/update, `src/views.zig`
-both windows' widget trees, `src/hooks.zig` the JSON merge, and
-`src/cli.zig` the non-GUI verbs.
+the banner's widget tree, `src/hooks.zig` the JSON merge, and
+`src/cli.zig` every verb but the banner itself.
 
 `update` never reads the clock, the environment, or the filesystem
 directly. Paths and the display size are resolved in `main` and carried
@@ -45,7 +45,7 @@ what lets the suite drive the whole app without a window.
 | --- | --- |
 | `ai-souls fire <event>` | resolves the event, draws its banner, exits — this is what hooks run |
 | `ai-souls "..."` | the same, for a headline you typed |
-| `ai-souls settings` | opens the settings window; closing it ends the process |
+| `ai-souls set <event> …` | edits one row of `~/.ai-souls/config.txt` and exits |
 | `ai-souls install` | merges the enabled hooks into `~/.claude/settings.json` |
 
 A hook's `fire` reads the config, and if that event is off it exits
@@ -110,12 +110,11 @@ comes from a live window with our own title, so there is no pid-reuse
 hazard to guard against. And a close the host chose to ignore would
 leave the loser's sound playing underneath the winner's.
 
-This is why there are **two** overlay window titles. A settings process
-declares an overlay window too — that is what Preview draws into — so a
-banner has to be nameable without also naming the idle overlay inside
-someone's open settings window. `declaredWindows` picks "AI Souls
-Screen" for a screen process and "AI Souls Overlay" otherwise. Get that
-wrong and a hook firing takes the settings app down with it.
+This is why there are **two** banner window titles. The shell band is
+"AI Souls Screen"; the opaque-mode fallback window (see
+[Platform notes](#platform-notes)) is "AI Souls Overlay", so the
+watchers inside one process can tell the two apart. A dismisser hunts
+both titles, so a banner comes down whichever mode drew it.
 
 `overlay_style.can_dismiss` gates the whole thing, and it is Win32-only:
 the mechanism leans entirely on `FindWindowExW` naming a window in
@@ -123,8 +122,7 @@ another process, and AppKit has no equivalent outside Accessibility.
 Where it is false the floor is absolute and rank never fires, so a
 screen is missed rather than drawn over another one — which is the right
 way round to fail. The throttle tests for preemption skip themselves
-there, and the settings pane leaves the ranking line out rather than
-promising something that will not happen.
+there.
 
 Closing the gap means finding another process's banner window without
 `FindWindowExW`. The likeliest route is recording the screen's pid in
@@ -387,21 +385,22 @@ Everything below was measured on Windows 11.
   the `chrome` builder that does have one is main-canvas only. Built out
   of `.panel` each strip draws that widget's border, and 48 hairlines
   through the fade turn the gradient into a flat lighter block.
-- **A screen process hides the settings window with a raw `SW_HIDE`** —
-  `orderOut:` on macOS — not with the SDK's `closeWindow`. The shell
-  window is declared in `app.zon` and therefore always created, but a
-  banner must not open a settings window over itself. `closeWindow` is
-  not the answer: the Win32 host documents that runtime-initiated closes
-  bypass the `close_policy` hook and really destroy the window —
-  measured as `window_closed` followed immediately by `stop`, which
-  would end the process mid-banner. Either way the hide has to wait for
-  the window to be VISIBLE: the host reveals it on its first frame, and
-  a hide that lands before that reveal is undone by it.
-- **`AI_SOULS_OPAQUE=1`** runs the overlay as a solid window: the band
+- **The band is the shell window the host creates from `app.zon`,**
+  before any app code runs, with everything but its size fixed at
+  create — the manifest is comptime, so no process can vary those flags.
+  A canvas window is created ordered-out and revealed only after its
+  first frame presents, which is exactly the reveal a banner wants:
+  nothing else ever flashes on screen. The scene built in `main`
+  re-declares the window with the real display's size (the one thing the
+  manifest cannot know), and `overlay_style` does the placing.
+- **`AI_SOULS_OPAQUE=1`** runs the banner as a solid window: the band
   stops being see-through, and in exchange it regains the Direct2D path
   and runs noticeably smoother. It is also the fallback for
   remote-desktop and compositor setups that cannot present a layered
-  window at all, where a solid banner beats an invisible one.
+  window at all, where a solid banner beats an invisible one. Because
+  the shell band's transparency is fixed in the manifest, this mode
+  draws in a second, opaque window declared from the model
+  (`main.declaredWindows`) while the shell band paints nothing.
 - **The overlay window's style is fixed from Win32 directly**
   (`src/overlay_style.zig`), because the SDK's `WindowDescriptor` cannot
   express it. It is a borderless top-level window — `WS_POPUP` with no
@@ -434,14 +433,11 @@ Everything below was measured on Windows 11.
   soft edge is trying to dissolve into the desktop, which reads as a
   border drawn around the bar. `setHasShadow:NO` goes on with the frame.
 - **No window this app declares may activate.** `activate_on_show =
-  false` on the overlay and on the shell window both — and on the shell
-  window it has to be in `app.zon`, because the host creates that one
-  before any app code runs. The shell window is created in a banner's
-  process too, and its reveal activating the app is how a hook used to
-  take the keyboard from whatever you were typing into. The cost is that
-  `ai-souls settings` opens unfocused: the SDK exposes no `focusWindow`
-  effect, so there is no asking for it back, and one click is the price.
-- **A screen process also leaves the Dock on macOS.** The host asks for
+  false` on every window — and on the shell band it has to be in
+  `app.zon`, because the host creates that one before any app code
+  runs. A window's reveal activating the app is how a hook used to take
+  the keyboard from whatever you were typing into.
+- **A banner process also leaves the Dock on macOS.** The host asks for
   `NSApplicationActivationPolicyRegular`, which is a Dock tile and a
   Cmd-Tab entry either way; a banner asks for `Accessory` instead,
   through `objc_msgSend` on the main queue like the rest of the AppKit
@@ -463,7 +459,7 @@ Everything below was measured on Windows 11.
 - **A message that says "type this next" spells the command with
   `invocation`,** not `command_name`. `npx ai-souls install` leaves
   nothing on PATH — the package is unpacked into `_npx/<hash>` and npm
-  collects it later — so that reader needs `npx ai-souls settings`. It is
+  collects it later — so that reader needs `npx ai-souls set …`. It is
   read off our own path, not npm's environment variables: those say a
   package manager ran us, not that the binary is somewhere temporary.
 - **`native automate snapshot` is not trustworthy here.** It served a

@@ -8,8 +8,8 @@
 //!
 //! One binary, several jobs (see `cli.zig`). This file is the app: it
 //! resolves the paths and the display size that `update` is not allowed
-//! to look up, declares the shell window, and wires
-//! the two views onto the `UiApp` loop.
+//! to look up, declares the band as the app's one shell window, and
+//! wires the banner view onto the `UiApp` loop.
 
 const std = @import("std");
 const runner = @import("runner");
@@ -49,23 +49,16 @@ const bundle_id = "dev.native_sdk.ai-souls";
 /// What a person sees.
 const display_name = "AI Souls";
 
-/// The overlay's window title. Never drawn — the window is chromeless
+/// The banner's window title. Never drawn — the window is chromeless
 /// and, after `overlay_style`, absent from the taskbar and Alt+Tab. It
-/// exists to be DISTINCT from the settings window's title, because that
-/// is how `overlay_style` finds the right HWND.
+/// exists to be FINDABLE: it is how `overlay_style` names the right
+/// HWND, and how `dismissOthers` hunts the banners of other processes.
 ///
-/// Two of them, because a settings process ALSO declares an overlay
-/// window — that is what a preview draws into. `dismissOthers` hunts
-/// banners by title, so a banner must be nameable without also naming
-/// the idle overlay sitting inside someone's open settings window. A
-/// hook's screen would otherwise take the settings app down with it.
-const overlay_window_title = "AI Souls Overlay";
+/// Two of them, because opaque mode draws in a second, declared window
+/// (see `declaredWindows`) that has to be nameable without also naming
+/// the empty shell band sitting underneath it.
 const screen_window_title = "AI Souls Screen";
-
-// The settings window's own title is `display_name`, and a screen
-// process finds it by that title to put it away. Both platforms match
-// the whole title, so it never collides with the two above despite the
-// shared prefix.
+const opaque_window_title = "AI Souls Overlay";
 
 // ---------------------------------------------------------------- type
 //
@@ -87,78 +80,73 @@ const app_fonts = [_]SoulsApp.FontRegistration{.{
     .ttf = serif_ttf,
 }};
 
-const settings_width: f32 = 900;
-const settings_height: f32 = 640;
-
 const app_permissions = [_][]const u8{
-    native_sdk.security.permission_command,
     native_sdk.security.permission_view,
 };
 
-const shell_views = [_]native_sdk.ShellView{.{
-    .label = app.canvas_label,
+/// The shell window's label — `app.zon`'s startup window, which the
+/// scene's first window adopts when it loads.
+const shell_window_label = "main";
+
+const band_views = [_]native_sdk.ShellView{.{
+    .label = app.overlay_canvas_label,
     .kind = .gpu_surface,
     .fill = true,
-    .role = "Settings canvas",
-    .accessibility_label = "AI Souls settings",
+    .role = "Banner",
+    .accessibility_label = "AI Souls screen",
     .gpu_pixel_format = .bgra8_unorm,
     .gpu_present_mode = .timer,
-    .gpu_alpha_mode = .@"opaque",
+    // The other half of the window's `transparent`: pixels the view
+    // does not ink reach through to the desktop.
+    .gpu_alpha_mode = .premultiplied,
     .gpu_color_space = .srgb,
     .gpu_vsync = true,
 }};
 
-const shell_windows = [_]native_sdk.ShellWindow{.{
-    .label = app.settings_window_label,
-    .title = display_name,
-    .width = settings_width,
-    .height = settings_height,
-    .min_width = 780,
-    .min_height = 520,
-    .restore_state = false,
-    .restore_policy = .center_on_primary,
-    // Never take the keyboard. This window exists in a banner's process
-    // too — see app.zon, where the startup window's copy of this lives.
-    .activate_on_show = false,
-    // Closing the settings window ends the process. The hooks do not
-    // depend on it — each one starts its own.
-    .close_policy = .quit,
-    .views = &shell_views,
-}};
-
-const shell_scene: native_sdk.ShellConfig = .{ .windows = &shell_windows };
+/// The band, sized for the display the banner is about to draw on.
+///
+/// The manifest's copy of this window carries the flags the host fixes
+/// at create time — chromeless, transparent, topmost, click-through,
+/// non-activating — because the host creates the startup window before
+/// any of this code runs. What the SCENE contributes is the size: it is
+/// re-applied when the scene loads, and it is the one thing the
+/// manifest cannot know, because it depends on the display.
+fn bandWindow(display: screen.Display) native_sdk.ShellWindow {
+    return .{
+        .label = shell_window_label,
+        .title = screen_window_title,
+        .width = display.width,
+        .height = app.bandHeight(display.width, display.height),
+        .resizable = false,
+        .restore_state = false,
+        .titlebar = .chromeless,
+        .transparent = true,
+        .always_on_top = true,
+        .click_through = true,
+        .activate_on_show = false,
+        .close_policy = .quit,
+        .views = &band_views,
+    };
+}
 
 // ------------------------------------------------------------- theming
 
-/// The app owns its palette: a Souls-adjacent charcoal register, and a
-/// display rung sized for the overlay headline rather than for a hero
-/// numeral.
+/// A display rung sized for the banner headline, the serif on it, and
+/// the charcoal an opaque-mode window clears to.
 fn tokens(model: *const Model) canvas.DesignTokens {
     var design = canvas.DesignTokens.theme(.{
         .color_scheme = .dark,
         .pack = .geist,
     });
 
+    // The transparent band never shows this; the opaque-mode window is
+    // exactly this behind the banner's own translucent ink.
     design.colors.background = canvas.Color.rgb8(0x12, 0x11, 0x10);
-    design.colors.surface = canvas.Color.rgb8(0x1A, 0x18, 0x16);
-    design.colors.surface_subtle = canvas.Color.rgb8(0x21, 0x1E, 0x1B);
-    design.colors.surface_pressed = canvas.Color.rgb8(0x2B, 0x27, 0x22);
-    design.colors.border = canvas.Color.rgb8(0x35, 0x30, 0x2A);
-    design.colors.text = canvas.Color.rgb8(0xE8, 0xE1, 0xD4);
-    design.colors.text_muted = canvas.Color.rgb8(0x93, 0x8B, 0x7C);
-    design.colors.accent = canvas.Color.rgb8(0xC9, 0xA2, 0x27);
-    design.colors.accent_text = canvas.Color.rgb8(0x14, 0x12, 0x0E);
-    design.colors.focus_ring = canvas.Color.rgb8(0xC9, 0xA2, 0x27);
-    design.colors.destructive = canvas.Color.rgb8(0x8B, 0x14, 0x14);
 
-    // App-wide, because the SDK resolves faces from tokens and tokens
-    // are per-model, not per-window: there is no way to serif only the
-    // overlay. Which is fine — a Souls app in Geist would be the odd
-    // one out, not the settings pane in Garamond.
     design.typography.font_id = serif_font_id;
 
-    // Only the overlay uses the display rung, and the whole banner is
-    // measured off it (see `app.bandHeight`).
+    // The whole banner is measured off the display rung — see
+    // `app.bandHeight`.
     design.typography.display_size = app.headlineSize(model.screen_width);
 
     return design;
@@ -166,31 +154,28 @@ fn tokens(model: *const Model) canvas.DesignTokens {
 
 // --------------------------------------------------- windows and views
 
-/// The overlay window, declared for as long as the process lives —
-/// which for a screen process is the length of one banner.
+/// The opaque-mode fallback window — the ONLY window this app still
+/// declares from the model.
 ///
-/// It used to be held open permanently by a resident app, on the belief
-/// that a canvas window takes ~2.5s to reveal. That is not what the host
-/// does. A canvas window is created ordered-out and shown on its first
-/// successful present; the deferred-show deadline is only a safety net
-/// for a window that never presents, and it is 1s, not 2.5. Measured on
-/// Win32, SDK 0.8.1, five runs: window created 115-211 ms after the
-/// request and VISIBLE at 191-318 ms, median 275 ms — the deadline is
-/// never reached. Cheap enough that a screen can be a whole process,
-/// which is what let the resident app go.
+/// The band's shell window is transparent by manifest, and the manifest
+/// is comptime: no process can undo it. So when `AI_SOULS_OPAQUE=1`
+/// says this machine cannot present a layered window, the banner draws
+/// in this second, opaque window instead, and the shell band paints
+/// nothing — invisible glass with a solid banner over it.
 ///
-/// It is only as tall as the banner, not as tall as the display — see
-/// `app.bandHeight`, where that turns out to be the whole framerate
-/// budget.
+/// In transparent mode (everyone else) this declares nothing, and the
+/// process has exactly one window.
 fn declaredWindows(
     model: *const Model,
     scratch: *SoulsApp.WindowsScratch,
 ) []const SoulsApp.WindowDescriptor {
+    if (model.overlay_transparent) return scratch.windows[0..0];
     scratch.windows[0] = .{
         .label = app.overlay_window_label,
-        .canvas_label = app.overlay_canvas_label,
-        // A banner names itself as one, so another banner can find it.
-        .title = if (model.screen_only == null) overlay_window_title else screen_window_title,
+        .canvas_label = app.opaque_canvas_label,
+        // Distinct from the shell band's title, so the watchers can
+        // tell the two apart.
+        .title = opaque_window_title,
         // Declared, and applied by neither host: Win32 passes
         // CW_USEDEFAULT to CreateWindowExW, and macOS takes the size
         // while leaving the origin to AppKit. `overlay_style` moves the
@@ -200,10 +185,8 @@ fn declaredWindows(
         .width = model.screen_width,
         .height = app.bandHeight(model.screen_width, model.screen_height),
         .resizable = false,
-        // No caption, no frame — Windows also requires a chromeless
-        // style before it will accept a transparent surface.
         .titlebar = .chromeless,
-        .transparent = model.overlay_transparent,
+        .transparent = false,
         .always_on_top = true,
         // The whole point: clicks land on whatever is underneath.
         .click_through = true,
@@ -234,7 +217,15 @@ fn windowView(ui: *AppUi, model: *const Model, window_label: []const u8) AppUi.N
     if (std.mem.eql(u8, window_label, app.overlay_window_label)) {
         return views.overlayView(ui, model);
     }
-    return views.settingsView(ui, model);
+    return mainView(ui, model);
+}
+
+/// The main canvas: the band itself — except in opaque mode, where the
+/// declared window draws the banner and this transparent one must not
+/// paint a second copy underneath it.
+fn mainView(ui: *AppUi, model: *const Model) AppUi.Node {
+    if (!model.overlay_transparent) return views.blankView(ui);
+    return views.overlayView(ui, model);
 }
 
 // --------------------------------------------------------------- entry
@@ -243,14 +234,14 @@ pub fn initialModel(
     paths: paths_mod.Paths,
     display: screen.Display,
     opaque_overlay: bool,
-    screen_only: ?config_mod.EventSettings,
+    entry: config_mod.EventSettings,
 ) Model {
     return .{
         .paths = paths,
         .screen_width = display.width,
         .screen_height = display.height,
         .overlay_transparent = !opaque_overlay,
-        .screen_only = screen_only,
+        .entry = entry,
     };
 }
 
@@ -272,76 +263,81 @@ pub fn main(init: std.process.Init) !void {
     // Every verb has said everything it is going to say by now, so the
     // console we may have borrowed to say it in goes back as we found it.
     console.restore();
-    const screen_only: ?config_mod.EventSettings = switch (mode) {
+    const entry: config_mod.EventSettings = switch (mode) {
         .handled_ok => return,
         // Exit rather than returning an error: the verb already printed
         // something a human can act on, and a Zig error trace stapled
         // underneath it would only be noise.
         .handled_failed => std.process.exit(1),
-        .run_app => null,
         .run_screen => |entry| entry,
     };
 
-    // Before the window exists, because `adopt` has to know where to put
-    // it and `update` may not ask the OS anything.
+    // Before the window exists, because the scene and `adopt` both have
+    // to know where to put it, and `update` may not ask the OS anything.
     const display = screen.active();
 
-    if (screen_only != null) {
-        // Getting this far with a banner already up means the throttle
-        // decided this screen outranks it (see `throttle.zig`), so the
-        // incumbent comes down now rather than being drawn over. First,
-        // because the glass should be clear before ours is revealed.
-        overlay_style.dismissOthers(screen_window_title);
-        // A banner is not an app: no Dock tile, no app switcher entry,
-        // and never the thing you are typing into.
-        overlay_style.hideFromSwitcher();
-        // This process exists to draw one banner. The settings window
-        // is still the shell window the SDK insists on, so it is pushed
-        // out of sight rather than opening over the very screen we were
-        // asked for.
-        overlay_style.hideSettings(display_name);
-    }
-    // The overlay window does not exist yet — this waits for it, then
-    // fixes what the descriptor cannot express. See `overlay_style` for
-    // why none of it can be done declaratively.
+    // Getting this far with a banner already up means the throttle
+    // decided this screen outranks it (see `throttle.zig`), so the
+    // incumbent comes down now rather than being drawn over. First,
+    // because the glass should be clear before ours is revealed. Both
+    // titles, because an opaque-mode process wears the second.
+    overlay_style.dismissOthers(screen_window_title);
+    overlay_style.dismissOthers(opaque_window_title);
+    // A banner is not an app: no Dock tile, no app switcher entry, and
+    // never the thing you are typing into.
+    overlay_style.hideFromSwitcher();
+
+    const opaque_overlay = if (init.environ_map.get("AI_SOULS_OPAQUE") orelse
+        init.environ_map.get("CLAUDE_SOULS_OPAQUE")) |value|
+        !std.mem.eql(u8, value, "0")
+    else
+        false;
+
+    // The window this waits for does not exist yet — it fixes what the
+    // descriptor cannot express. See `overlay_style` for why none of it
+    // can be done declaratively.
     const band = bandFrame(display);
-    if (screen_only == null) {
-        overlay_style.adopt(overlay_window_title, band);
+    if (opaque_overlay) {
+        overlay_style.adopt(opaque_window_title, band);
+        // The shell band is empty glass in this mode, but a chromeless
+        // popup still gets a taskbar button on Windows.
+        overlay_style.excludeFromTaskbar(screen_window_title);
     } else {
         overlay_style.adopt(screen_window_title, band);
     }
 
+    const shell_windows = [_]native_sdk.ShellWindow{bandWindow(display)};
     const app_state = try SoulsApp.create(std.heap.page_allocator, .{
         .name = app_name,
-        .scene = shell_scene,
-        .canvas_label = app.canvas_label,
+        .scene = .{ .windows = &shell_windows },
+        .canvas_label = app.overlay_canvas_label,
         .fonts = &app_fonts,
         .tokens_fn = tokens,
-        .view = views.settingsView,
+        .view = mainView,
         .window_view = windowView,
         .windows_fn = declaredWindows,
         .update_fx = app.update,
         .init_fx = app.init,
     });
     defer app_state.destroy();
-    const opaque_overlay = if (init.environ_map.get("AI_SOULS_OPAQUE") orelse
-        init.environ_map.get("CLAUDE_SOULS_OPAQUE")) |value|
-        !std.mem.eql(u8, value, "0")
-    else
-        false;
     app_state.model = initialModel(
         paths,
         display,
         opaque_overlay,
-        screen_only,
+        entry,
     );
 
     try runner.runWithOptions(app_state.app(), .{
         .app_name = app_name,
-        .window_title = display_name,
+        .window_title = screen_window_title,
         .bundle_id = bundle_id,
         .icon_path = "assets/icon.png",
-        .default_frame = geometry.RectF.init(0, 0, settings_width, settings_height),
+        .default_frame = geometry.RectF.init(
+            0,
+            0,
+            display.width,
+            app.bandHeight(display.width, display.height),
+        ),
         .restore_state = false,
         .js_window_api = false,
         .security = .{

@@ -37,7 +37,7 @@ npx ai-souls "YOU DIED"
 Change what they say:
 
 ```bash
-npx ai-souls settings
+npx ai-souls set turn_complete --title "YOU DIED"
 ```
 
 Claude Code is the only agent wired up so far.
@@ -70,32 +70,42 @@ land at once the more important one wins.
 
 Out of the box every headline is just the event's name — "Turn
 completed", "Commit made". **YOU DIED** is a much better joke when you
-chose it, so write your own in the settings window. Whatever you type
-gets SHOUTED on screen.
+chose it, so write your own. Whatever you type gets SHOUTED on screen.
 
-Per event: the headline and subtitle, a colour (death, bonfire, victory,
-soul, hollow, covenant), a sound (gong, choir, chime, ember, thud, you
-died, or silence), the volume, and how long it stays up.
+```bash
+ai-souls set commit_made --title "IT IS DONE" --sound gong
+ai-souls set tool_failed on
+ai-souls reset all
+```
+
+Per event: on or off, the headline and subtitle, a colour (death,
+bonfire, victory, soul, hollow, covenant), a sound (gong, choir, chime,
+ember, thud, you died, or silence), the volume, and how long it stays
+up. `ai-souls status` shows where everything currently stands, and
+`ai-souls fire <event>` previews the result.
 
 Every event ships as the red **YOU DIED** screen, good news included. The
 other five colours are there if you want them.
 
 Screens run seven seconds by default, long enough for the You Died sting
-to finish — drag that down if it is more banner than you wanted. Sounds
-start at 20%, because these arrive while you are concentrating.
+to finish — set a shorter `--duration` if it is more banner than you
+wanted. Sounds start at 20%, because these arrive while you are
+concentrating.
 
-Changes save themselves. Only arming or disarming an event needs **Write
-hooks** afterwards, since that is what changes the hooks on disk.
+Arming or disarming an event changes which hooks exist, so run
+`ai-souls install` again afterwards — the command says so when it
+matters.
 
 ## The command
 
 ```
-ai-souls <message>       put a headline on screen
-ai-souls settings        open the settings window
-ai-souls install         write the enabled hooks into Claude Code
-ai-souls uninstall       remove every AI Souls hook
-ai-souls status          show paths and per-event settings
-ai-souls fire <event>    show one event's screen (this is what hooks run)
+ai-souls <message>          put a headline on screen
+ai-souls install            write the enabled hooks into Claude Code
+ai-souls uninstall          remove every AI Souls hook
+ai-souls status             show paths and per-event settings
+ai-souls set <event> ...    change an event: on, off, and the options below
+ai-souls reset <event|all>  put an event, or everything, back to defaults
+ai-souls fire <event>       show one event's screen (this is what hooks run)
 ```
 
 Anything that is not a verb is a headline, so quoting is optional:
@@ -112,6 +122,9 @@ ai-souls PRAISE THE SUN --style victory --sound choir
 | `--duration <ms>` | 600 to 10000 |
 | `--subtitle <text>` | |
 | `--` | everything after this is the message |
+
+`set` takes the same options, plus `--title <text>` and the bare words
+`on` / `off`.
 
 Prefix any of them with `npx`, or `npm install -g ai-souls` if you would
 rather have the command itself — the hooks do not need it, but it saves

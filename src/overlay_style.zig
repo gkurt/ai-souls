@@ -30,9 +30,9 @@
 //!
 //! **Nothing here is what stops a banner taking focus.** No window this
 //! app declares may activate, so none of them says otherwise:
-//! `activate_on_show = false` on the overlay and on the shell window
-//! both, the latter in `app.zon` as well, because the host creates that
-//! one before any of this code runs. It is declared, not repaired.
+//! `activate_on_show = false` on every window, the shell band's in
+//! `app.zon` as well, because the host creates that one before any of
+//! this code runs. It is declared, not repaired.
 //!
 //! Why the main queue on macOS, and not a thread: AppKit may only be
 //! asked about its windows from the thread that owns them. Everything
@@ -41,10 +41,8 @@
 //!
 //! The rest of what macOS needs is the app around the window. The host
 //! asks for `NSApplicationActivationPolicyRegular` — a Dock tile and a
-//! Cmd-Tab entry — and the shell window is created in a banner's process
-//! too, so it has to be put away like it is on Win32. See
-//! `hideFromSwitcher` and the macOS half of `hideSettings`; both are
-//! screen-process only.
+//! Cmd-Tab entry — and a banner deserves neither. See
+//! `hideFromSwitcher`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -136,13 +134,6 @@ const mac = struct {
         return send(target, sel(name));
     }
 
-    /// A `BOOL` is a signed char, so it is read as one: any value but 0
-    /// and 1 in a Zig `bool` would be undefined.
-    fn msgFlag(target: Id, name: [:0]const u8) bool {
-        const send: *const fn (Id, Sel) callconv(.c) i8 = @ptrCast(&objc_msgSend);
-        return send(target, sel(name)) != 0;
-    }
-
     fn msgCount(target: Id, name: [:0]const u8) usize {
         const send: *const fn (Id, Sel) callconv(.c) usize = @ptrCast(&objc_msgSend);
         return send(target, sel(name));
@@ -151,11 +142,6 @@ const mac = struct {
     fn msgAtIndex(target: Id, name: [:0]const u8, index: usize) Id {
         const send: *const fn (Id, Sel, usize) callconv(.c) Id = @ptrCast(&objc_msgSend);
         return send(target, sel(name), index);
-    }
-
-    fn msgWithId(target: Id, name: [:0]const u8, argument: Id) void {
-        const send: *const fn (Id, Sel, Id) callconv(.c) void = @ptrCast(&objc_msgSend);
-        send(target, sel(name), argument);
     }
 
     fn msgWithRectFlag(target: Id, name: [:0]const u8, rect: Rect, flag: bool) void {
@@ -200,10 +186,10 @@ pub const Frame = struct {
 
 /// Start watching for the overlay window. Returns immediately.
 ///
-/// `title` must be the overlay's window title and must be unique to it
-/// — this is how the window is found, so the overlay does not share the
-/// settings window's title. Comptime, so a caller passes one UTF-8
-/// literal and each platform takes the encoding its own API speaks.
+/// `title` must be the banner window's title and must be unique to it —
+/// this is how the window is found. Comptime, so a caller passes one
+/// UTF-8 literal and each platform takes the encoding its own API
+/// speaks.
 ///
 /// `band` is where the window has to end up. Win32 is not given it:
 /// `centre` reads the display and the window's own height in the physical
@@ -254,11 +240,11 @@ fn placeTick(_: ?*anyopaque) callconv(.c) void {
 /// Returns true once there is nothing left to do. This is the macOS
 /// counterpart of `apply` and `centre`, and it runs for the same reason.
 ///
-/// Unlike `orderOutSettings` it wants the window BEFORE it is visible:
-/// the host creates it ordered-out and reveals it on its first present,
-/// and a change that lands after that reveal is one the eye can catch.
+/// It wants the window BEFORE it is visible: the host creates it
+/// ordered-out and reveals it on its first present, and a change that
+/// lands after that reveal is one the eye can catch.
 fn dressBanner(nsapp: mac.Id) bool {
-    const window = findWindow(nsapp, banner_title, false) orelse return false;
+    const window = findWindow(nsapp, banner_title) orelse return false;
     mac.msgWithRectFlag(window, "setFrame:display:", .{
         .x = banner_frame.x,
         .y = banner_frame.y,
@@ -273,15 +259,11 @@ fn dressBanner(nsapp: mac.Id) bool {
     return true;
 }
 
-/// Take this process out of the Dock and the app switcher — macOS, and
-/// a screen process only.
-///
-/// The Win32 half of this is a window style (`WS_EX_TOOLWINDOW`, in
-/// `apply` below) and so belongs to the banner whichever mode it is in.
-/// The macOS half is the whole PROCESS's activation policy, which is why
-/// it cannot be done in `adopt`: a settings app that dropped out of the
-/// Dock and lost its menu bar would be a worse app. A banner has neither
-/// to lose.
+/// Take this process out of the Dock and the app switcher — macOS. The
+/// Win32 half of this is a window style (`WS_EX_TOOLWINDOW`, in `apply`
+/// below); the macOS half is the whole PROCESS's activation policy,
+/// and a process that exists to flash one banner has no Dock tile or
+/// Cmd-Tab entry to lose.
 pub fn hideFromSwitcher() void {
     if (builtin.os.tag != .macos) return;
     // Queued rather than done here: `NSApp` does not exist until the
@@ -298,78 +280,28 @@ fn becomeAccessory(_: ?*anyopaque) callconv(.c) void {
     mac.msgWithInteger(nsapp, "setActivationPolicy:", mac.policy_accessory);
 }
 
-/// Put the settings window away as soon as it exists — a screen process,
-/// which the CLI uses to start an app for someone who asked only for a
-/// banner.
+/// Windows-only: keep the opaque-mode shell band out of the taskbar.
 ///
-/// A plain `SW_HIDE` rather than the SDK's `closeWindow`, because a
-/// runtime-initiated close is a real `DestroyWindow`: the Win32 host's
-/// `close_policy = .hide` hook is on `WM_CLOSE` and explicitly documents
-/// that programmatic closes bypass it, so asking the SDK to close this
-/// window ends the process. Measured exactly that — `window_closed`
-/// followed immediately by `stop`.
-///
-/// Hiding behind the host's back leaves it believing the window is on
-/// the glass. That costs nothing here: the permanent overlay window is
-/// always visible, so the host's occlusion heuristic already keeps the
-/// app awake, and the tray's Open item goes through `showWindow`, which
-/// puts it back either way.
-///
-/// macOS does the same with `orderOut:`, which is `SW_HIDE`'s exact
-/// counterpart — no delegate, no close, the window simply leaves the
-/// glass. Both platforms have to WAIT for the window to be visible
-/// before hiding it: the host reveals it on its first frame, and a hide
-/// that lands earlier is undone by that reveal.
-pub fn hideSettings(comptime title: [:0]const u8) void {
-    switch (builtin.os.tag) {
-        .windows => {
-            const wide = comptime std.unicode.utf8ToUtf16LeStringLiteral(title);
-            const thread = std.Thread.spawn(.{}, watchHide, .{wide}) catch return;
-            thread.detach();
-        },
-        .macos => {
-            settings_title = title;
-            mac.dispatch_async_f(mac.main_queue, null, hideTick);
-        },
-        else => {},
-    }
+/// In that mode the banner draws in the DECLARED opaque window and the
+/// transparent startup window underneath paints nothing — but a
+/// chromeless `WS_POPUP` with no owner still gets a taskbar button for
+/// the seconds it exists, and `apply` is what takes that away. macOS
+/// needs no counterpart: the whole process is already out of the Dock
+/// and the switcher (`hideFromSwitcher`), and an invisible window has
+/// nothing else to leak.
+pub fn excludeFromTaskbar(comptime title: [:0]const u8) void {
+    if (builtin.os.tag != .windows) return;
+    adoptWin32(title);
 }
 
-/// The settings window's exact title, for the macOS watcher. A screen
-/// process runs one banner and calls `hideSettings` once, so there is
-/// nothing to thread through the dispatch context.
-var settings_title: [:0]const u8 = "";
-var hide_attempts_left: usize = attempts;
-
-fn hideTick(_: ?*anyopaque) callconv(.c) void {
-    const nsapp = mac.app();
-    if (nsapp == null) return;
-    if (orderOutSettings(nsapp)) return;
-    if (hide_attempts_left == 0) return;
-    hide_attempts_left -= 1;
-    mac.dispatch_after_f(
-        mac.dispatch_time(mac.time_now, poll_interval_ms * std.time.ns_per_ms),
-        mac.main_queue,
-        null,
-        hideTick,
-    );
-}
-
-/// Order the settings window off the glass. Returns true once there is
-/// nothing left to do.
-fn orderOutSettings(nsapp: mac.Id) bool {
-    const window = findWindow(nsapp, settings_title, true) orelse return false;
-    mac.msgWithId(window, "orderOut:", null);
-    return true;
-}
-
-/// This process's window with exactly this title, or null while there is
-/// none. `[NSApp windows]` holds ordered-out windows too, which is what
-/// makes `visible_only = false` mean "as soon as it exists".
+/// This process's window with exactly this title, or null while there
+/// is none. `[NSApp windows]` holds ordered-out windows too, which is
+/// what makes this mean "as soon as it exists" — and `dressBanner`
+/// wants the window BEFORE the host reveals it.
 ///
-/// The title is matched WHOLE, like `FindWindowExW` does: a banner's own
-/// title starts with the same two words as the settings window's.
-fn findWindow(nsapp: mac.Id, title: [:0]const u8, visible_only: bool) mac.Id {
+/// The title is matched WHOLE, like `FindWindowExW` does: the two
+/// banner titles share their first two words.
+fn findWindow(nsapp: mac.Id, title: [:0]const u8) mac.Id {
     const windows = mac.msgId(nsapp, "windows");
     if (windows == null) return null;
 
@@ -378,7 +310,6 @@ fn findWindow(nsapp: mac.Id, title: [:0]const u8, visible_only: bool) mac.Id {
     while (index < count) : (index += 1) {
         const window = mac.msgAtIndex(windows, "objectAtIndex:", index);
         if (window == null) continue;
-        if (visible_only and !mac.msgFlag(window, "isVisible")) continue;
         const window_title = mac.msgId(window, "title") orelse continue;
         const text = mac.msgCString(window_title, "UTF8String") orelse continue;
         if (!std.mem.eql(u8, std.mem.span(text), title)) continue;
@@ -447,21 +378,6 @@ fn watch(title: [:0]const u16) void {
             apply(hwnd);
             centre(hwnd);
             return;
-        }
-        win.Sleep(poll_interval_ms);
-    }
-}
-
-fn watchHide(title: [:0]const u16) void {
-    var remaining: usize = attempts;
-    while (remaining > 0) : (remaining -= 1) {
-        if (findOwnWindow(title)) |hwnd| {
-            // Only once it is actually up: hiding a window the host has
-            // not shown yet is undone by the reveal that follows.
-            if (win.IsWindowVisible(hwnd) != 0) {
-                _ = win.ShowWindow(hwnd, win.sw_hide);
-                return;
-            }
         }
         win.Sleep(poll_interval_ms);
     }

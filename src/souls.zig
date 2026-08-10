@@ -51,8 +51,8 @@ pub const Style = enum(u8) {
     }
 
     /// What someone types after `--style`. Case-insensitive against the
-    /// enum's own field names, so the CLI can never drift from the
-    /// picker in the settings window.
+    /// enum's own field names, so the flag can never drift from the
+    /// enum.
     pub fn fromName(name: []const u8) ?Style {
         return enumFromName(Style, name);
     }
@@ -61,8 +61,7 @@ pub const Style = enum(u8) {
 /// The bundled sound bank. Files live in `assets/sounds/<file>` and are
 /// resolved relative to the app bundle at runtime.
 ///
-/// The order is the cycle order in the settings window, and the numbers
-/// are written to the config file — append, never reorder.
+/// The numbers are written to the config file — append, never reorder.
 pub const Sound = enum(u8) {
     none,
     gong,
@@ -126,7 +125,7 @@ pub const Sound = enum(u8) {
 
     /// What someone types after `--sound`. "you-died" and "you_died"
     /// both land, and "silent" is accepted for `.none` because that is
-    /// what the settings window calls it.
+    /// what its label calls it.
     pub fn fromName(name: []const u8) ?Sound {
         if (std.ascii.eqlIgnoreCase(name, "silent")) return .none;
         return enumFromName(Sound, name);
@@ -160,7 +159,7 @@ pub const Event = struct {
     /// fire <key>`, and used as the hook's own identity — never change
     /// one without a migration.
     key: []const u8,
-    /// Human name in the settings list.
+    /// Human name in the `status` listing.
     label: []const u8,
     /// What actually triggers it, in the user's words.
     blurb: []const u8,
@@ -171,7 +170,7 @@ pub const Event = struct {
     /// name for the `*ToolUse*` family, an `error_type` for
     /// `StopFailure` — so a pipe-separated list is legal here.
     matcher: []const u8 = "",
-    /// Short human rendering of `matcher` for the settings pane, for
+    /// Short human rendering of `matcher` for the `status` listing, for
     /// the events whose real matcher is a long alternation.
     matcher_label: []const u8 = "",
     /// Permission-rule narrowing (`"if"`), so "PR created" can mean the
@@ -541,7 +540,7 @@ test "styles and sounds can be named on the command line" {
     try std.testing.expectEqual(Sound.none, Sound.fromName("none").?);
     try std.testing.expect(Sound.fromName("kazoo") == null);
 
-    // Every name the settings window shows has to be typeable.
+    // Every label the CLI prints has to be typeable back.
     for (0..Sound.count) |index| {
         const sound = Sound.fromIndex(@intCast(index));
         try std.testing.expectEqual(sound, Sound.fromName(@tagName(sound)).?);
