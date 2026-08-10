@@ -427,7 +427,32 @@ test "a disabled event has no hook after install" {
 
     const rendered = try renderApplied(arena, "{}", &config);
     try testing.expect(std.mem.indexOf(u8, rendered, "\"turn_complete\"") == null);
-    try testing.expect(std.mem.indexOf(u8, rendered, "\"session_start\"") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "\"tool_failed\"") != null);
+}
+
+test "the five ways a session starts install as five matcher groups" {
+    // They all live under one `SessionStart` key, so the thing that
+    // tells them apart on disk is the matcher — and a missing one would
+    // quietly make that row fire on all five sources.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var config = config_mod.Config.default();
+    for (souls.events, 0..) |event, index| {
+        if (std.mem.eql(u8, event.hook_event, "SessionStart")) config.events[index].enabled = true;
+    }
+
+    const rendered = try renderApplied(arena, "{}", &config);
+    for ([_][]const u8{ "startup", "resume", "clear", "fork", "compact" }) |source| {
+        const quoted = try std.fmt.allocPrint(arena, "\"matcher\": \"{s}\"", .{source});
+        try testing.expect(std.mem.indexOf(u8, rendered, quoted) != null);
+    }
+
+    // And out of the box only the one worth interrupting someone for.
+    const defaults = try renderApplied(arena, "{}", &config_mod.Config.default());
+    try testing.expect(std.mem.indexOf(u8, defaults, "\"compaction_done\"") != null);
+    try testing.expect(std.mem.indexOf(u8, defaults, "\"session_start\"") == null);
 }
 
 test "a settings file with no hooks key gains one" {

@@ -221,6 +221,15 @@ fn detailPane(ui: *Ui, model: *const Model) Node {
                     // alternation; nobody needs to read that here.
                     if (event.matcher_label.len > 0) event.matcher_label else event.matcher,
                 })),
+                // Only the events with a window of their own. That no
+                // screen ever draws over another is true of all of them
+                // and belongs in the README, not on every row.
+                if (event.throttle_ms == 0) ui.spacer(0) else ui.text(.{
+                    .wrap = true,
+                    .style_tokens = .{ .foreground = .text_muted },
+                }, ui.fmt("This one arrives in bursts — at most one screen every {d}s.", .{
+                    event.throttle_ms / 1000,
+                })),
             }),
 
             ui.row(.{ .gap = 10, .cross = .center }, .{

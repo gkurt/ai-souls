@@ -36,7 +36,8 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/main.zig` | entry point: resolves paths and the display, picks a mode, owns the Win32/AppKit helper threads |
 | `src/app.zig` | the whole Model/Msg/update — the TEA loop |
 | `src/souls.zig` | the comptime event catalog and the sound bank |
-| `src/config.zig` | allocation-free config codec, shared by `config.txt` and the trigger protocol |
+| `src/config.zig` | allocation-free config codec for `config.txt` |
+| `src/throttle.zig` | the on-disk record of when each event last drew, and the rules over it |
 | `src/cli.zig` | every non-GUI verb (`install`, `fire`, `status`, …) and the trigger handshake |
 | `src/hooks.zig` | the JSON merge into `~/.claude/settings.json` |
 | `src/paths.zig` | every path the app knows, resolved once |
@@ -56,10 +57,16 @@ Paths and the display size are resolved in `main` and carried in the model;
 everything else goes through the effects channel. That is what makes the suite
 able to drive the whole app without a window.
 
-Two invariants worth knowing before you change things:
+Invariants worth knowing before you change things:
 
 - **The `Sound` and event enums are serialized as integers** into
-  `~/.ai-souls/config.txt`. Append to them; never reorder.
+  `~/.ai-souls/config.txt`. Append to them; never reorder. The event
+  *catalog* is different: it is keyed by `Event.key` everywhere it is
+  written down, so rows can be reordered freely — index into
+  `Config.events` with `souls.indexOfKey`, never with a literal.
+- **A `.death` row sounds like `.you_died`.** The red screen and that
+  sting are one thing; a catalog test enforces it, and `ai-souls
+  "..."` applies the same rule when no `--sound` was given.
 - **A screen is a process.** `fire` resolves the event and becomes the banner;
   when the overlay ends it calls `fx.quitApp()`. Nothing is resident, so any
   new timer or poll you add runs on someone's machine only while a banner is
@@ -67,6 +74,11 @@ Two invariants worth knowing before you change things:
 - **The settings window is hidden with a raw `SW_HIDE` in a screen process,**
   never `fx.closeWindow`: a runtime-initiated close really destroys the window
   and stops the app, which would kill the banner.
+- **The throttle is a file, and it is decided before the window opens.**
+  `fire` reads `~/.ai-souls/fired.txt`, and a screen it decides against
+  costs one read and exits `handled_ok` — a hook that reported failure
+  over a suppressed decoration would be a bug. It is racy on purpose;
+  see the module comment before adding a lock.
 
 ## Releasing
 

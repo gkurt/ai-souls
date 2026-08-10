@@ -45,6 +45,10 @@ pub const Paths = struct {
     app_dir: PathText = .{},
     /// `~/.ai-souls/config.txt`
     config: PathText = .{},
+    /// `~/.ai-souls/fired.txt` — when each event last drew a screen.
+    /// With nothing resident there is nowhere else to keep it; see
+    /// `throttle.zig`.
+    fired: PathText = .{},
     /// `~/.ai-souls/bin` — the copy of the binary that installed hooks
     /// run, with the sounds beside it. See `runtime_copy.zig` for why a
     /// hook must never name the package manager's own path.
@@ -80,6 +84,7 @@ pub const Paths = struct {
         if (home.len > 0) {
             paths.app_dir.set(join(&scratch, home, dir_name));
             paths.config.set(join(&scratch, paths.app_dir.slice(), "config.txt"));
+            paths.fired.set(join(&scratch, paths.app_dir.slice(), "fired.txt"));
             paths.runtime_dir.set(join(&scratch, paths.app_dir.slice(), "bin"));
             const runtime_dir = join(&dir_buffer, paths.app_dir.slice(), "bin");
             paths.runtime_exe.set(join(&scratch, runtime_dir, exe_name));
@@ -211,6 +216,10 @@ test "resolve builds every path from a home directory" {
     try std.testing.expect(std.mem.endsWith(u8, paths.claude_settings.slice(), "settings.json"));
     try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), ".claude") != null);
     try std.testing.expect(std.mem.endsWith(u8, paths.config.slice(), "config.txt"));
+    // The throttle's record sits beside the settings, not beside the
+    // binary: it belongs to the person, not to the install.
+    try std.testing.expect(std.mem.startsWith(u8, paths.fired.slice(), paths.app_dir.slice()));
+    try std.testing.expect(std.mem.endsWith(u8, paths.fired.slice(), "fired.txt"));
     // The copy hooks run lives under our directory, not the package
     // manager's, and it is a file inside the directory beside it.
     try std.testing.expect(std.mem.startsWith(u8, paths.runtime_dir.slice(), paths.app_dir.slice()));

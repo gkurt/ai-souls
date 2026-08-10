@@ -273,6 +273,8 @@ test "a fresh install starts quiet" {
 
 test "a title with no subtitle separator still parses" {
     const parsed = Config.parse("e turn_complete 1 2 3 70 2000 GREAT SOUL EMBRACED");
-    try std.testing.expectEqualStrings("GREAT SOUL EMBRACED", parsed.events[1].title.slice());
-    try std.testing.expectEqualStrings("", parsed.events[1].subtitle.slice());
+    // By key, not by position: the catalog's order is not a promise.
+    const index = souls.indexOfKey("turn_complete").?;
+    try std.testing.expectEqualStrings("GREAT SOUL EMBRACED", parsed.events[index].title.slice());
+    try std.testing.expectEqualStrings("", parsed.events[index].subtitle.slice());
 }

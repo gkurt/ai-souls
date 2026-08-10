@@ -158,6 +158,16 @@ pub const Event = struct {
     /// one Bash call that creates a PR rather than every Bash call.
     condition: []const u8 = "",
 
+    /// Shortest gap between two of THIS event's screens, in
+    /// milliseconds.
+    ///
+    /// Zero is not "no throttle": no screen ever draws over one that is
+    /// still up, whatever the catalog says. This is the extra quiet on
+    /// top of that, for the events that arrive in bursts — twenty
+    /// failures out of one retry loop should cost one screen, not
+    /// twenty. See `throttle.zig`.
+    throttle_ms: u32 = 0,
+
     /// What the headline says out of the box.
     ///
     /// Deliberately just the event's own name. The Souls wording is the
@@ -179,13 +189,76 @@ const api_error_types =
     "authentication_failed|oauth_org_not_allowed|billing_error|" ++
     "invalid_request|model_not_found|server_error|max_output_tokens|unknown";
 
+/// `SessionStart` fires for five different reasons and says which in its
+/// `source`, which is also what its matcher is matched against. They are
+/// five separate rows rather than one, because "I opened a terminal" and
+/// "the context just got compacted out from under me" are not the same
+/// news — and the second one is the only one worth a screen by default.
 pub const events = [_]Event{
     .{
         .key = "session_start",
         .label = "Session started",
-        .blurb = "A Claude Code session begins or resumes.",
+        .blurb = "A Claude Code session starts fresh.",
         .hook_event = "SessionStart",
+        .matcher = "startup",
         .default_title = "Session started",
+        .default_style = .bonfire,
+        .default_sound = .ember,
+        .default_enabled = false,
+    },
+    .{
+        .key = "session_resumed",
+        .label = "Session resumed",
+        .blurb = "An earlier session is picked back up.",
+        .hook_event = "SessionStart",
+        .matcher = "resume",
+        .default_title = "Session resumed",
+        .default_style = .bonfire,
+        .default_sound = .ember,
+        .default_enabled = false,
+    },
+    .{
+        .key = "session_cleared",
+        .label = "Session cleared",
+        .blurb = "The conversation is wiped with `/clear`.",
+        .hook_event = "SessionStart",
+        .matcher = "clear",
+        .default_title = "Session cleared",
+        .default_style = .hollow,
+        .default_sound = .thud,
+        .default_enabled = false,
+    },
+    .{
+        .key = "session_forked",
+        .label = "Session forked",
+        .blurb = "A session is branched into a new one.",
+        .hook_event = "SessionStart",
+        .matcher = "fork",
+        .default_title = "Session forked",
+        .default_style = .soul,
+        .default_sound = .chime,
+        .default_enabled = false,
+    },
+    .{
+        .key = "compaction",
+        .label = "Compacting context",
+        .blurb = "The conversation is about to be compacted.",
+        .hook_event = "PreCompact",
+        .default_title = "Compacting context",
+        .default_style = .hollow,
+        .default_sound = .thud,
+        .default_enabled = false,
+    },
+    .{
+        .key = "compaction_done",
+        .label = "Context compacted",
+        // The one screen of this family that earns being on: compaction
+        // happens without asking, takes a while, and the session that
+        // comes back has forgotten things. Worth knowing it happened.
+        .blurb = "Compaction finishes and the session picks up again.",
+        .hook_event = "SessionStart",
+        .matcher = "compact",
+        .default_title = "Context compacted",
         .default_style = .bonfire,
         .default_sound = .ember,
         .default_enabled = true,
@@ -205,6 +278,9 @@ pub const events = [_]Event{
         .label = "Question asked",
         .blurb = "Claude Code raises a notification — a permission prompt or an idle nudge.",
         .hook_event = "Notification",
+        // A run that needs three permissions in a row asks for them one
+        // after another, and the idle nudge repeats on its own.
+        .throttle_ms = 10_000,
         .default_title = "Question asked",
         .default_style = .soul,
         .default_sound = .chime,
@@ -216,6 +292,11 @@ pub const events = [_]Event{
         .blurb = "Any tool call comes back a failure.",
         .hook_event = "PostToolUseFailure",
         .matcher = "*",
+        // The burstiest event in the catalog by a distance: an agent
+        // that has got something wrong tends to get it wrong repeatedly
+        // and quickly, and the twentieth screen says nothing the first
+        // one did not.
+        .throttle_ms = 15_000,
         .default_title = "Tool call failed",
         .default_style = .death,
         .default_sound = .you_died,
@@ -228,9 +309,12 @@ pub const events = [_]Event{
         .hook_event = "StopFailure",
         .matcher = "rate_limit|overloaded",
         .matcher_label = "rate limit / overloaded",
+        // A rate limit lasts minutes and is retried into the whole
+        // time. It is one piece of news.
+        .throttle_ms = 60_000,
         .default_title = "Rate limited",
-        .default_style = .hollow,
-        .default_sound = .thud,
+        .default_style = .death,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -240,9 +324,10 @@ pub const events = [_]Event{
         .hook_event = "StopFailure",
         .matcher = api_error_types,
         .matcher_label = "any non-rate-limit API error",
+        .throttle_ms = 30_000,
         .default_title = "API error",
         .default_style = .death,
-        .default_sound = .gong,
+        .default_sound = .you_died,
         .default_enabled = true,
     },
     .{
@@ -274,6 +359,7 @@ pub const events = [_]Event{
         .label = "Permission denied",
         .blurb = "A tool call is refused.",
         .hook_event = "PermissionDenied",
+        .throttle_ms = 10_000,
         .default_title = "Permission denied",
         .default_style = .covenant,
         .default_sound = .thud,
@@ -284,19 +370,11 @@ pub const events = [_]Event{
         .label = "Subagent finished",
         .blurb = "A spawned subagent returns.",
         .hook_event = "SubagentStop",
+        // A fan-out of ten agents lands all at once.
+        .throttle_ms = 10_000,
         .default_title = "Subagent finished",
         .default_style = .soul,
         .default_sound = .chime,
-        .default_enabled = false,
-    },
-    .{
-        .key = "compaction",
-        .label = "Context compacted",
-        .blurb = "The conversation is about to be compacted.",
-        .hook_event = "PreCompact",
-        .default_title = "Context compacted",
-        .default_style = .hollow,
-        .default_sound = .thud,
         .default_enabled = false,
     },
     .{
@@ -384,10 +462,57 @@ test "styles and sounds can be named on the command line" {
     }
 }
 
-test "the death screen sounds like death" {
-    const index = indexOfKey("tool_failed").?;
-    try std.testing.expectEqual(Style.death, events[index].default_style);
-    try std.testing.expectEqual(Sound.you_died, events[index].default_sound);
+test "a death screen always sounds like death" {
+    // The rule, not one example of it: the red screen and that sound
+    // are one thing, so a new `.death` row cannot ship with anything
+    // else under it. Someone who wants the gong can still pick it.
+    var seen_any = false;
+    for (events) |event| {
+        if (event.default_style != .death) continue;
+        seen_any = true;
+        try std.testing.expectEqual(Sound.you_died, event.default_sound);
+    }
+    try std.testing.expect(seen_any);
+}
+
+test "every way a session can start is its own row" {
+    // A bare `SessionStart` with no matcher would fire on all five
+    // sources at once, which is what these rows replaced.
+    var sources: usize = 0;
+    for (events) |event| {
+        if (!std.mem.eql(u8, event.hook_event, "SessionStart")) continue;
+        sources += 1;
+        try std.testing.expect(event.matcher.len > 0);
+        try std.testing.expect(std.mem.indexOfScalar(u8, event.matcher, '|') == null);
+        for (events) |other| {
+            if (std.mem.eql(u8, other.key, event.key)) continue;
+            if (!std.mem.eql(u8, other.hook_event, "SessionStart")) continue;
+            try std.testing.expect(!std.mem.eql(u8, other.matcher, event.matcher));
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 5), sources);
+
+    // Only the one that tells you something you could not have seen
+    // coming is armed out of the box.
+    for (events) |event| {
+        if (!std.mem.eql(u8, event.hook_event, "SessionStart")) continue;
+        const armed = std.mem.eql(u8, event.key, "compaction_done");
+        try std.testing.expectEqual(armed, event.default_enabled);
+    }
+}
+
+test "the burst-prone events are throttled and the rest are not" {
+    for (events) |event| {
+        const throttled = event.throttle_ms > 0;
+        const bursty =
+            std.mem.eql(u8, event.key, "tool_failed") or
+            std.mem.eql(u8, event.key, "rate_limited") or
+            std.mem.eql(u8, event.key, "api_error") or
+            std.mem.eql(u8, event.key, "question_asked") or
+            std.mem.eql(u8, event.key, "permission_denied") or
+            std.mem.eql(u8, event.key, "subagent_done");
+        try std.testing.expectEqual(bursty, throttled);
+    }
 }
 
 test "the sound numbering on disk never moves" {

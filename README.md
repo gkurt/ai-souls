@@ -290,23 +290,47 @@ after an upgrade to bring that copy up to date.
 
 | Event | Fires on | |
 | --- | --- | --- |
-| Session started | `SessionStart` | |
+| Session started | `SessionStart` + `startup` | *(off)* |
+| Session resumed | `SessionStart` + `resume` | *(off)* |
+| Session cleared | `SessionStart` + `clear` | *(off)* |
+| Session forked | `SessionStart` + `fork` | *(off)* |
+| Compacting context | `PreCompact` | *(off)* |
+| Context compacted | `SessionStart` + `compact` | |
 | Turn completed | `Stop` | |
-| Question asked | `Notification` | |
-| Tool call failed | `PostToolUseFailure` | |
-| Rate limited | `StopFailure` + `rate_limit\|overloaded` | |
-| API error | `StopFailure` + auth / billing / server faults | |
+| Question asked | `Notification` | max 1 / 10s |
+| Tool call failed | `PostToolUseFailure` | max 1 / 15s |
+| Rate limited | `StopFailure` + `rate_limit\|overloaded` | max 1 / 60s |
+| API error | `StopFailure` + auth / billing / server faults | max 1 / 30s |
 | PR created | `PostToolUse` + `Bash(gh pr create:*)` | |
 | Commit made | `PostToolUse` + `Bash(git commit:*)` | |
 | Permission denied | `PermissionDenied` | *(off)* |
 | Subagent finished | `SubagentStop` | *(off)* |
-| Context compacted | `PreCompact` | *(off)* |
 | Session ended | `SessionEnd` | *(off)* |
 
-The last two are the ones you cannot get any other way: Claude Code's
-`StopFailure` hook fires when a turn ends on an API error, and its
-matcher is the `error_type`, so "you are rate limited" and "something
-is actually broken" can be two different screens.
+`ai-souls status` prints this table as your install actually has it.
+
+`SessionStart` fires for five different reasons and says which in its
+`source`, so each one is its own row. Only **Context compacted** is
+armed out of the box: compaction happens without asking, takes a while,
+and the session that comes back has forgotten things — the other four
+you already know about, because you caused them.
+
+The two `StopFailure` rows are the ones you cannot get any other way.
+That hook fires when a turn ends on an API error and its matcher is the
+`error_type`, so "you are rate limited" and "something is actually
+broken" can be two different screens.
+
+### Throttling
+
+No screen ever draws over one that is still up, and the events that
+arrive in bursts have a window of their own on top of that — an agent
+that has got something wrong tends to get it wrong twenty times in a
+row, and the twentieth screen says nothing the first one did not.
+
+The record lives in `~/.ai-souls/fired.txt`, because with no resident
+process there is nowhere else to keep it. Windows are per event, so a
+storm of tool failures never swallows the API error that follows it. A
+screen you ask for by hand — `ai-souls "YOU DIED"` — is never held back.
 
 Everything about the bar is a multiple of the headline size, so it
 keeps its proportions on any display: the bar is 2.5x the type, and the
@@ -315,7 +339,8 @@ on a line.
 
 Per event you can set the headline and subtitle, the colour style
 (death / bonfire / victory / soul / hollow / covenant), the sound
-(gong / choir / chime / ember / thud / you died, or silence),
+(gong / choir / chime / ember / thud / you died, or silence — a death
+screen starts out sounding like one),
 the volume, and how long it stays up. Sounds start at 20% — these
 arrive unannounced while you are concentrating, so the first one is an
 accent rather than a jump scare. Changes save themselves; only arming

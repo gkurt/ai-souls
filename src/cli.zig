@@ -22,6 +22,7 @@ const config_mod = @import("config.zig");
 const hooks = @import("hooks.zig");
 const paths_mod = @import("paths.zig");
 const runtime_copy = @import("runtime_copy.zig");
+const throttle = @import("throttle.zig");
 
 /// The command a person types. Kept in one place because it appears in
 /// every usage string and every error message.
@@ -61,7 +62,7 @@ pub fn run(
     const rest = args[2..];
 
     // `--` says the rest is a headline even if it reads like a verb.
-    if (eq(verb, "--")) return message(io, rest);
+    if (eq(verb, "--")) return message(io, paths, rest);
 
     if (eq(verb, "install")) return hooksVerb(gpa, io, paths, rest, true);
     if (eq(verb, "uninstall")) return hooksVerb(gpa, io, paths, rest, false);
@@ -87,7 +88,7 @@ pub fn run(
         return .handled_failed;
     }
 
-    return message(io, args[1..]);
+    return message(io, paths, args[1..]);
 }
 
 fn eq(a: []const u8, b: []const u8) bool {
@@ -138,12 +139,38 @@ fn fire(io: std.Io, paths: *const paths_mod.Paths, rest: []const []const u8) Out
     // catches up at the next `install` — so the arming check has to
     // happen here too, and exiting quietly is the whole response.
     if (!config.events[index].enabled) return .handled_ok;
-    return .{ .run_screen = config.events[index] };
+
+    // Quietly, and with the same exit status as a screen that drew: as
+    // far as Claude Code is concerned the hook did its job either way,
+    // and a hook that chatters about the screens it decided against
+    // would be worse than the screens.
+    const entry = config.events[index];
+    var stamps = throttle.load(io, paths);
+    if (!stamps.allows(index, souls.events[index].throttle_ms, nowMs(io))) return .handled_ok;
+    return armScreen(io, paths, &stamps, index, entry);
+}
+
+/// Record a screen as about to be drawn, and hand it to `main`.
+///
+/// Stamped here rather than after the window closes, because the
+/// throttle's job is to stop the NEXT process opening a second banner
+/// over this one — and by the time this one is over, that decision has
+/// already been made.
+fn armScreen(
+    io: std.Io,
+    paths: *const paths_mod.Paths,
+    stamps: *throttle.Stamps,
+    index: ?usize,
+    entry: config_mod.EventSettings,
+) Outcome {
+    stamps.record(index, nowMs(io), entry.duration_ms);
+    throttle.save(io, paths, stamps);
+    return .{ .run_screen = entry };
 }
 
 /// `ai-souls <headline>` — an ad-hoc screen with no catalog row behind
 /// it.
-fn message(io: std.Io, args: []const []const u8) Outcome {
+fn message(io: std.Io, paths: *const paths_mod.Paths, args: []const []const u8) Outcome {
     var entry: config_mod.EventSettings = .{
         // A screen someone typed out by hand is worth hearing. The
         // catalog's default volume still applies, so it is an accent
@@ -154,6 +181,7 @@ fn message(io: std.Io, args: []const []const u8) Outcome {
     var headline: [souls.max_title_bytes]u8 = undefined;
     var headline_len: usize = 0;
     var literal = false;
+    var sound_chosen = false;
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -172,6 +200,7 @@ fn message(io: std.Io, args: []const []const u8) Outcome {
             }
             const value = args[index];
             if (!applyOption(io, &entry, name, value)) return .handled_failed;
+            if (eq(name, "sound")) sound_chosen = true;
             continue;
         }
 
@@ -194,7 +223,17 @@ fn message(io: std.Io, args: []const []const u8) Outcome {
         return .handled_failed;
     }
     entry.title.set(headline[0..headline_len]);
-    return .{ .run_screen = entry };
+    // The catalog's rule reaches out here: a death screen sounds like
+    // death unless the person said otherwise. `ai-souls "YOU DIED"`
+    // therefore needs no flags at all, which is the one command anyone
+    // types first.
+    if (!sound_chosen and entry.style == .death) entry.sound = .you_died;
+
+    // Not throttled — this one was asked for, out loud, by a person.
+    // Recorded all the same, so the next hook does not open a second
+    // banner over it.
+    var stamps = throttle.load(io, paths);
+    return armScreen(io, paths, &stamps, null, entry);
 }
 
 /// One `--name value` pair. Returns false having already explained
@@ -415,11 +454,25 @@ fn status(io: std.Io, paths: *const paths_mod.Paths) Outcome {
     }
     for (souls.events, 0..) |event, index| {
         const entry = &config.events[index];
+        // What it subscribes to, what narrows it, and what holds it
+        // back: between them they answer "why did I not see that
+        // screen", which is what anyone runs this for.
+        var hook: [160]u8 = undefined;
+        var hook_writer = std.Io.Writer.fixed(&hook);
+        hook_writer.print("{s}", .{event.hook_event}) catch {};
+        if (event.matcher.len > 0) {
+            const shown = if (event.matcher_label.len > 0) event.matcher_label else event.matcher;
+            hook_writer.print(" {s}", .{shown}) catch {};
+        }
+        if (event.condition.len > 0) hook_writer.print(" if {s}", .{event.condition}) catch {};
+        if (event.throttle_ms > 0) {
+            hook_writer.print(" · max 1/{d}s", .{event.throttle_ms / 1000}) catch {};
+        }
         say(io, "{s:<3} {s:<18} {s:<24} {s}\n", .{
             if (entry.enabled) "on" else "off",
             event.key,
             entry.title.slice(),
-            event.hook_event,
+            hook_writer.buffered(),
         });
     }
     return .handled_ok;
@@ -452,11 +505,18 @@ fn printUsage(io: std.Io) void {
         \\  --subtitle <text>
         \\  --                  everything after this is the message
         \\
-        \\  ai-souls "YOU DIED" --style death --sound you-died
+        \\  ai-souls "YOU DIED"
         \\  ai-souls -- status         say "status" instead of running it
+        \\
+        \\A death screen sounds like death unless --sound says otherwise.
         \\
         \\The agent argument is optional and defaults to claude, the only
         \\one supported today.
+        \\
+        \\Screens fired by hooks are throttled: never one over another,
+        \\and the burst-prone events no more than once in their window —
+        \\`ai-souls status` prints it. A screen you ask for by hand is
+        \\never held back.
         \\
     , .{});
 }

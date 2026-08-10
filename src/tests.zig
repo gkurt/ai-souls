@@ -10,6 +10,7 @@ const native_sdk = @import("native_sdk");
 const app = @import("app.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
+const paths_mod = @import("paths.zig");
 const souls = @import("souls.zig");
 
 const testing = std.testing;
@@ -72,6 +73,79 @@ test "fire resolves an armed event into the screen it will draw" {
 // No test drives a CLI path that PRINTS. `say` writes to this process's
 // real stdout, which under `zig build test` is the build runner's own
 // protocol stream — a usage message down that pipe wedges the run.
+
+test "the same hook twice in a row draws one screen" {
+    // The wiring, against a real file. `throttle.zig` proves the rules
+    // themselves against an injected clock; what this catches is a
+    // `fire` that forgot to read the record, or to write it.
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var paths: paths_mod.Paths = .{};
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const dir = std.fmt.bufPrint(&dir_buffer, ".zig-cache/tmp/{s}", .{tmp.sub_path}) catch
+        return error.PathTooLong;
+    paths.fired.set(paths_mod.join(&file_buffer, dir, "fired.txt"));
+
+    const hook = &.{ "ai-souls", "fire", "tool_failed" };
+    try testing.expect(cli.run(testing.allocator, testing.io, hook, &paths) == .run_screen);
+
+    // `handled_ok`, not a failure: the hook did its job, it just had
+    // nothing to add. Claude Code must never see this as an error.
+    try testing.expect(cli.run(testing.allocator, testing.io, hook, &paths) == .handled_ok);
+}
+
+test "a screen asked for by hand is never held back" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var paths: paths_mod.Paths = .{};
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const dir = std.fmt.bufPrint(&dir_buffer, ".zig-cache/tmp/{s}", .{tmp.sub_path}) catch
+        return error.PathTooLong;
+    paths.fired.set(paths_mod.join(&file_buffer, dir, "fired.txt"));
+
+    const shout = &.{ "ai-souls", "PRAISE THE SUN" };
+    try testing.expect(cli.run(testing.allocator, testing.io, shout, &paths) == .run_screen);
+    try testing.expect(cli.run(testing.allocator, testing.io, shout, &paths) == .run_screen);
+
+    // But it did take the floor with it, so a hook does not land on top.
+    const hook = &.{ "ai-souls", "fire", "turn_complete" };
+    try testing.expect(cli.run(testing.allocator, testing.io, hook, &paths) == .handled_ok);
+}
+
+test "a bare message sounds like the death screen it is" {
+    var paths: paths_mod.Paths = .{};
+    const outcome = cli.run(
+        testing.allocator,
+        testing.io,
+        &.{ "ai-souls", "YOU DIED" },
+        &paths,
+    );
+    switch (outcome) {
+        .run_screen => |entry| {
+            try testing.expectEqual(souls.Style.death, entry.style);
+            try testing.expectEqual(souls.Sound.you_died, entry.sound);
+        },
+        else => return error.ExpectedAScreen,
+    }
+}
+
+test "a style that is not death keeps the ad-hoc gong" {
+    var paths: paths_mod.Paths = .{};
+    const outcome = cli.run(
+        testing.allocator,
+        testing.io,
+        &.{ "ai-souls", "BONFIRE LIT", "--style", "bonfire" },
+        &paths,
+    );
+    switch (outcome) {
+        .run_screen => |entry| try testing.expectEqual(souls.Sound.gong, entry.sound),
+        else => return error.ExpectedAScreen,
+    }
+}
 
 test "a message becomes the screen it describes, with no catalog vote" {
     var paths: @import("paths.zig").Paths = .{};
