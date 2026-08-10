@@ -178,10 +178,34 @@ node tools/package-npm.mjs   # dist/npm, ready for `npm pack`
 
 The npm package is a single tarball carrying one binary per platform
 under `vendor/<platform>-<arch>/`, with a Node launcher that picks one
-and execs it. Only `win32-x64` can be built on a Windows machine; the
-other slots are filled by `.github/workflows/release.yml`, which builds
-on each runner and stages them into one package. A platform with no
-binary gets a clear error from the launcher rather than a mystery.
+and execs it. Two slots ship today:
+
+| Slot | Built on | |
+| --- | --- | --- |
+| `win32-x64` | `windows-latest` | `x86_64-windows-gnu` |
+| `darwin-universal` | `macos-14` | `arm64` + `x86_64`, fused with `lipo` |
+
+macOS is one universal binary rather than two arch slots, so the
+launcher looks for `darwin-universal` when there is no slot for the
+exact arch. A platform with no binary at all gets a clear error from the
+launcher rather than a mystery.
+
+Only `win32-x64` can be built on a Windows machine — the macOS target
+needs Apple's SDK. `.github/workflows/release.yml` builds both on their
+own runners and stages them into one package:
+
+- **push to `main`** — builds and tests on both platforms, and keeps
+  each binary as an artifact for 90 days
+- **tag `v*`** — the same, plus a check that the tag matches
+  `.version` in `app.zon`, plus a **draft** GitHub release with the
+  binaries and the tarball attached
+
+Nothing is published automatically. Publishing the draft, and
+`npm publish`, are both done by hand.
+
+CI names its targets explicitly instead of building for the host. A
+native build compiles for the runner's *detected CPU features*, so a
+binary built on a machine with AVX-512 can crash on one without it.
 
 Upgrading moves the binary, but the hooks name a copy under
 `~/.ai-souls/bin` rather than the package, so they keep working — see
@@ -292,7 +316,9 @@ in the model, and everything else goes through the effects channel.
 
 Developed and verified on Windows 11. macOS uses the same code paths
 (`NSFloatingWindowLevel`, `ignoresMouseEvents`, a clear window
-background) and is expected to work, but has not been run.
+background) and is expected to work. CI compiles it and runs the suite
+on a macOS runner, so it is known to build and known to pass its tests —
+but nobody has watched a banner appear there.
 
 A few things worth knowing:
 

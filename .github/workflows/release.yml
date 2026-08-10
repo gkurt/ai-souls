@@ -1,40 +1,71 @@
 # Build the binary on each platform, then stage one npm package that
 # carries all of them.
 #
-# The mac and linux slots exist only because of this workflow: the
-# macOS host needs Apple's SDK and cannot be cross-compiled from the
-# Windows dev machine this project was written on. Until this has run
-# green, `dist/npm` has a win32-x64 binary and nothing else, and the
-# launcher says so plainly on any other platform.
+# This workflow exists because the Windows machine this project was
+# written on cannot produce the macOS binary: that target needs Apple's
+# SDK, which only a macOS host has. Without a green run here, `dist/npm`
+# has a win32-x64 slot and nothing else, and the launcher says so
+# plainly on any other platform.
 #
-# Publishing is deliberately NOT wired up. The last step uploads a
-# tarball; pushing it to the registry is a human decision.
+# It runs on every push to main so main is always known to build on both
+# platforms and a fresh macOS binary is always a download away. Drop the
+# `branches` trigger if that ever costs more than it is worth.
+#
+# Publishing is deliberately NOT wired up. A tag drafts a GitHub release
+# with the binaries and the tarball attached; announcing it, and pushing
+# to the npm registry, stay human decisions.
 
 name: release
 
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned, because the SDK version decides both the toolchain and the
+  # generated build graph. An unpinned `npm install -g` would make the
+  # difference between two builds invisible.
+  NATIVE_SDK_VERSION: "0.8.1"
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
+    name: build ${{ matrix.slot }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Explicit targets rather than the native default, in both
+          # rows. `standardTargetOptions` with no `-Dtarget` resolves to
+          # the host WITH its detected CPU features, so a runner that
+          # happens to have AVX-512 would emit a binary that crashes on
+          # a machine that does not. Naming the target pins the baseline.
+          #
+          # `-gnu` and not `-msvc`: Zig carries mingw-w64 itself, so the
+          # build does not depend on which Visual Studio the runner
+          # image shipped this month. It is also what the dev machine
+          # builds, so CI and local are the same binary.
           - runner: windows-latest
             slot: win32-x64
             exe: ai-souls.exe
+            targets: x86_64-windows-gnu
+          # One universal binary instead of two arch slots: Apple
+          # Silicon and Intel out of a single ~12 MB file, which is
+          # smaller than shipping both separately and leaves nothing to
+          # resolve at install time.
           - runner: macos-14
-            slot: darwin-arm64
+            slot: darwin-universal
             exe: ai-souls
-          - runner: macos-13
-            slot: darwin-x64
-            exe: ai-souls
-          - runner: ubuntu-latest
-            slot: linux-x64
-            exe: ai-souls
+            targets: aarch64-macos x86_64-macos
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -42,20 +73,70 @@ jobs:
         with:
           node-version: 22
 
-      - run: npm install -g @native-sdk/cli
+      - name: Install the Native SDK
+        run: npm install -g "@native-sdk/cli@${NATIVE_SDK_VERSION}"
+
+      # The SDK is a path dependency compiled from source on every cold
+      # build, which is most of the wall clock here.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .native/build/.zig-cache
+            ~/.cache/zig
+            ~/AppData/Local/zig
+          key: zig-${{ matrix.slot }}-${{ env.NATIVE_SDK_VERSION }}-${{ hashFiles('src/**', 'app.zon') }}
+          restore-keys: |
+            zig-${{ matrix.slot }}-${{ env.NATIVE_SDK_VERSION }}-
+
+      - run: native check
 
       # The suite is platform-independent, but a compile failure on a
       # host nobody develops on is exactly what this job exists to find.
-      - run: native test
-      - run: native build
+      - run: native test --yes
+
+      - name: Build every slice
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for target in ${{ matrix.targets }}; do
+            echo "::group::$target"
+            native build --yes -Dtarget="$target"
+            mv "zig-out/bin/${{ matrix.exe }}" "out/$target"
+            echo "::endgroup::"
+          done
+
+      - name: Fuse the slices into one binary
+        run: |
+          set -euo pipefail
+          cd out
+          slices=(*)
+          if [ "${#slices[@]}" -eq 1 ]; then
+            mv "${slices[0]}" "${{ matrix.exe }}"
+          else
+            lipo -create -output "${{ matrix.exe }}" "${slices[@]}"
+            rm -f "${slices[@]}"
+            # A universal binary that quietly lost a slice is worse than
+            # a failed build: it installs fine and dies on someone
+            # else's laptop.
+            for want in ${{ matrix.targets }}; do
+              arch="${want%%-*}"
+              if [ "$arch" = "aarch64" ]; then arch=arm64; fi
+              lipo -archs "${{ matrix.exe }}" | tr ' ' '\n' | grep -qx "$arch" \
+                || { echo "missing $arch slice"; exit 1; }
+            done
+            lipo -archs "${{ matrix.exe }}"
+          fi
+          ls -l "${{ matrix.exe }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.slot }}
-          path: zig-out/bin/${{ matrix.exe }}
+          path: out/${{ matrix.exe }}
           if-no-files-found: error
+          retention-days: 90
 
   package:
+    name: package
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -69,9 +150,25 @@ jobs:
           path: binaries
           pattern: binary-*
 
-      # One slot per downloaded artifact, all into the same dist.
+      # A tag that disagrees with the manifest would publish a package
+      # whose version does not match the binary inside it.
+      - name: Check the tag against app.zon
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          version=$(grep -oP '\.version\s*=\s*"\K[^"]+' app.zon)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME does not match .version = \"$version\" in app.zon"
+            exit 1
+          fi
+
+      # One slot per downloaded artifact, all into the same dist. The
+      # upload/download round trip drops the executable bit; the
+      # packager sets it again for the non-Windows slots.
       - name: Stage every slot
         run: |
+          set -euo pipefail
           first=1
           for dir in binaries/binary-*; do
             slot="${dir#binaries/binary-}"
@@ -94,3 +191,49 @@ jobs:
           name: npm-tarball
           path: dist/npm/*.tgz
           if-no-files-found: error
+          retention-days: 90
+
+  release:
+    name: draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Artifact names are for this workflow; release assets are for
+      # people, and land in a downloads folder next to everything else
+      # they ever downloaded.
+      - name: Name the assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp artifacts/npm-tarball/*.tgz release/
+          for dir in artifacts/binary-*; do
+            slot="${dir#artifacts/binary-}"
+            for found in "$dir"/*; do
+              case "$found" in
+                *.exe) cp "$found" "release/ai-souls-${GITHUB_REF_NAME}-${slot}.exe" ;;
+                *)     cp "$found" "release/ai-souls-${GITHUB_REF_NAME}-${slot}" ;;
+              esac
+            done
+          done
+          ls -l release
+
+      # Draft, not published: the assets are persisted and the release
+      # notes are written, and a person decides whether the world sees
+      # it.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            release/*

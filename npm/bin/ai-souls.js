@@ -17,10 +17,20 @@ const vendor = join(root, "vendor");
 
 // The directory name is exactly Node's own `${platform}-${arch}`, so
 // there is no table here to fall out of date.
+//
+// macOS is the exception, and only because the tarball is smaller for
+// it: one universal binary covers both Apple Silicon and Intel, so it
+// ships as `darwin-universal` instead of twice under two arch names. An
+// arch-specific slot still wins if one is there — someone building from
+// source for their own machine should not have to know about this.
 const slot = `${process.platform}-${process.arch}`;
-const binary = join(vendor, slot, process.platform === "win32" ? "ai-souls.exe" : "ai-souls");
+const exe = process.platform === "win32" ? "ai-souls.exe" : "ai-souls";
+const candidates = [slot];
+if (process.platform === "darwin") candidates.push("darwin-universal");
 
-if (!existsSync(binary)) {
+const binary = candidates.map((name) => join(vendor, name, exe)).find((path) => existsSync(path));
+
+if (!binary) {
   const available = existsSync(vendor)
     ? (await readdir(vendor, { withFileTypes: true }))
         .filter((entry) => entry.isDirectory())

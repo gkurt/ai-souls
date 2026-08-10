@@ -12,10 +12,10 @@
 //   node tools/package-npm.mjs --keep \            stage someone else's
 //     --slot darwin-arm64 --binary path/to/ai-souls
 //
-// The last form is how the mac and linux slots get filled: a build job
-// per platform uploads its binary, and one assemble job stages them all
-// (see .github/workflows/release.yml). They cannot be built here —
-// the macOS host needs Apple's SDK.
+// The last form is how the mac slot gets filled: a build job per
+// platform uploads its binary and one assemble job stages them all
+// (see .github/workflows/release.yml). It cannot be built here — the
+// macOS target needs Apple's SDK, which only a macOS host has.
 
 import { cp, mkdir, readFile, rm, writeFile, readdir, chmod } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -30,6 +30,11 @@ const flag = (name) => {
   const at = args.indexOf(`--${name}`);
   return at >= 0 ? args[at + 1] : undefined;
 };
+
+// What a complete release carries. `darwin-universal` is one lipo'd
+// binary rather than two arch slots, which the launcher knows to look
+// for; the tarball is ~6 MB lighter for it.
+const shipped = ["win32-x64", "darwin-universal"];
 
 const slot = flag("slot") ?? `${process.platform}-${process.arch}`;
 const exeName = slot.startsWith("win32") ? "ai-souls.exe" : "ai-souls";
@@ -73,7 +78,7 @@ const slots = (await readdir(join(out, "vendor"), { withFileTypes: true }))
 
 console.log(`ai-souls@${version} staged in dist/npm`);
 console.log(`  binaries: ${slots.join(", ")}`);
-for (const missing of ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]) {
+for (const missing of shipped) {
   if (!slots.includes(missing)) console.log(`  MISSING:  ${missing}`);
 }
 console.log("");
