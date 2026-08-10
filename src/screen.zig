@@ -58,6 +58,14 @@ fn windowsPrimary() Size {
 }
 
 fn macosPrimary() Size {
+    // The test binary links no macOS frameworks. `linkPlatform` in the
+    // Native SDK's build graph runs against the app module only, and a
+    // Debug `native test` gets a separate module that never sees it — so
+    // referencing CoreGraphics here fails the test link with an
+    // undefined `_CGMainDisplayID`. `is_test` is comptime, so this
+    // returns before the extern is ever named.
+    if (builtin.is_test) return fallback;
+
     const display = macos_api.CGMainDisplayID();
     const width = macos_api.CGDisplayPixelsWide(display);
     const height = macos_api.CGDisplayPixelsHigh(display);
@@ -70,6 +78,8 @@ fn macosPrimary() Size {
     };
 }
 
+// On macOS this asserts the fallback rather than the real display, for
+// the linking reason above. Windows tests hit the real GetSystemMetrics.
 test "the primary display is a plausible size" {
     const size = primary();
     try std.testing.expect(size.width >= 320 and size.width <= 30_000);

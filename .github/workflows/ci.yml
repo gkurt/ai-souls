@@ -19,6 +19,8 @@ concurrency:
 
 env:
   NATIVE_SDK_VERSION: "0.8.1"
+  # Only Windows needs this spelled out — see the install step.
+  ZIG_VERSION: "0.16.0"
 
 defaults:
   run:
@@ -29,7 +31,7 @@ jobs:
     name: manifests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       # Two manifests carry the version; a hand edit to one of them is
@@ -54,13 +56,25 @@ jobs:
             target: aarch64-macos
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: Install the Native SDK
         run: npm install -g "@native-sdk/cli@${NATIVE_SDK_VERSION}"
+
+      # The SDK downloads a managed Zig for macOS but has none for
+      # Windows, where it expects to find one on PATH and stops if it
+      # cannot.
+      - name: Install Zig
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          zig="zig-x86_64-windows-${ZIG_VERSION}"
+          curl -fsSL -o zig.zip "https://ziglang.org/download/${ZIG_VERSION}/${zig}.zip"
+          7z x -y -o"$RUNNER_TEMP" zig.zip > /dev/null
+          echo "${RUNNER_TEMP}/${zig}" >> "$GITHUB_PATH"
 
       - uses: actions/cache@v4
         with:

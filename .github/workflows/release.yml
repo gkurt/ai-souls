@@ -35,6 +35,8 @@ env:
   # generated build graph. An unpinned `npm install -g` would make the
   # difference between two builds invisible.
   NATIVE_SDK_VERSION: "0.8.1"
+  # Only Windows needs this spelled out — see the install step.
+  ZIG_VERSION: "0.16.0"
 
 defaults:
   run:
@@ -71,13 +73,25 @@ jobs:
             targets: aarch64-macos x86_64-macos
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
       - name: Install the Native SDK
         run: npm install -g "@native-sdk/cli@${NATIVE_SDK_VERSION}"
+
+      # The SDK downloads a managed Zig for macOS but has none for
+      # Windows, where it expects to find one on PATH and stops if it
+      # cannot.
+      - name: Install Zig
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          zig="zig-x86_64-windows-${ZIG_VERSION}"
+          curl -fsSL -o zig.zip "https://ziglang.org/download/${ZIG_VERSION}/${zig}.zip"
+          7z x -y -o"$RUNNER_TEMP" zig.zip > /dev/null
+          echo "${RUNNER_TEMP}/${zig}" >> "$GITHUB_PATH"
 
       # The SDK is a path dependency compiled from source on every cold
       # build, which is most of the wall clock here.
@@ -143,8 +157,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -205,7 +219,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
