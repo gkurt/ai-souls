@@ -33,6 +33,9 @@ pub const PathText = struct {
 pub const legacy_dir_name = ".claude-souls";
 pub const dir_name = ".ai-souls";
 
+/// The binary's own filename, extension and all.
+pub const exe_name = if (@import("builtin").os.tag == .windows) "ai-souls.exe" else "ai-souls";
+
 pub const Paths = struct {
     /// This binary, so the installed hooks can name it and the app can
     /// re-invoke itself for the settings.json merge.
@@ -48,6 +51,14 @@ pub const Paths = struct {
     /// `~/.ai-souls/alive` — a timestamp the running app refreshes, so
     /// the CLI can tell whether anything is listening to the trigger.
     alive: PathText = .{},
+    /// `~/.ai-souls/bin` — the copy of the binary that installed hooks
+    /// run, with the sounds beside it. See `runtime_copy.zig` for why a
+    /// hook must never name the package manager's own path.
+    runtime_dir: PathText = .{},
+    runtime_exe: PathText = .{},
+    /// Which build is in `runtime_dir`, so re-installing the same one
+    /// does not rewrite a binary that might be running.
+    runtime_stamp: PathText = .{},
     /// `~/.claude-souls/config.txt`, carried only so the first run of a
     /// renamed build can adopt it.
     legacy_config: PathText = .{},
@@ -77,6 +88,10 @@ pub const Paths = struct {
             paths.config.set(join(&scratch, paths.app_dir.slice(), "config.txt"));
             paths.trigger.set(join(&scratch, paths.app_dir.slice(), "trigger"));
             paths.alive.set(join(&scratch, paths.app_dir.slice(), "alive"));
+            paths.runtime_dir.set(join(&scratch, paths.app_dir.slice(), "bin"));
+            const runtime_dir = join(&dir_buffer, paths.app_dir.slice(), "bin");
+            paths.runtime_exe.set(join(&scratch, runtime_dir, exe_name));
+            paths.runtime_stamp.set(join(&scratch, runtime_dir, "installed.txt"));
             // A separate buffer for each base: `join`'s base may not
             // live in the buffer it is writing into.
             const legacy_dir = join(&dir_buffer, home, legacy_dir_name);
@@ -86,6 +101,18 @@ pub const Paths = struct {
         }
 
         return paths;
+    }
+
+    /// What an installed hook should name as its command.
+    ///
+    /// The copy under `~/.ai-souls/bin`, because that path is ours and
+    /// outlives whatever a package manager did — see `runtime_copy.zig`.
+    /// Falls back to the running binary only when there is no home
+    /// directory to put a copy in, which is a case `install` rejects
+    /// before it ever gets here.
+    pub fn hookCommand(self: *const Paths) []const u8 {
+        if (!self.runtime_exe.isEmpty()) return self.runtime_exe.slice();
+        return self.exe.slice();
     }
 
     /// Adopt a pre-rename `~/.claude-souls/config.txt` if this install
@@ -194,6 +221,13 @@ test "resolve builds every path from a home directory" {
     try std.testing.expect(std.mem.endsWith(u8, paths.config.slice(), "config.txt"));
     try std.testing.expect(std.mem.endsWith(u8, paths.trigger.slice(), "trigger"));
     try std.testing.expect(std.mem.endsWith(u8, paths.alive.slice(), "alive"));
+    // The copy hooks run lives under our directory, not the package
+    // manager's, and it is a file inside the directory beside it.
+    try std.testing.expect(std.mem.startsWith(u8, paths.runtime_dir.slice(), paths.app_dir.slice()));
+    try std.testing.expect(std.mem.startsWith(u8, paths.runtime_exe.slice(), paths.runtime_dir.slice()));
+    try std.testing.expect(std.mem.startsWith(u8, paths.runtime_stamp.slice(), paths.runtime_dir.slice()));
+    try std.testing.expect(std.mem.endsWith(u8, paths.runtime_exe.slice(), exe_name));
+    try std.testing.expectEqualStrings(paths.runtime_exe.slice(), paths.hookCommand());
     try std.testing.expect(std.mem.startsWith(u8, paths.app_dir.slice(), home));
     // ".ai-souls" and ".claude" are different directories, and the
     // hooks go in neither of the app's own.

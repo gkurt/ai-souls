@@ -16,6 +16,7 @@ const souls = @import("souls.zig");
 const config_mod = @import("config.zig");
 const hooks = @import("hooks.zig");
 const paths_mod = @import("paths.zig");
+const runtime_copy = @import("runtime_copy.zig");
 
 /// The command a person types. Kept in one place because it appears in
 /// every usage string and every error message.
@@ -419,29 +420,6 @@ fn startApp(io: std.Io, paths: *const paths_mod.Paths) void {
     _ = &child;
 }
 
-/// Is this executable somewhere that will be deleted out from under it?
-///
-/// `npx` unpacks a package into `.../_npx/<hash>/node_modules/...` and
-/// npm garbage-collects that directory whenever it feels like it. An
-/// installed hook names the binary by absolute path, so hooks written
-/// from there keep pointing at a file that is no longer on disk — and
-/// because our hooks are `async` with a five second timeout, Claude
-/// Code swallows the failure. The screens would simply stop, with
-/// nothing anywhere saying why.
-///
-/// Matched on a whole path SEGMENT, so a project that merely has the
-/// letters in its name is not caught.
-pub fn isTransientPath(path: []const u8) bool {
-    var start: usize = 0;
-    for (path, 0..) |byte, index| {
-        if (byte == '/' or byte == '\\') {
-            if (eq(path[start..index], "_npx")) return true;
-            start = index + 1;
-        }
-    }
-    return eq(path[start..], "_npx");
-}
-
 /// `install [agent]` / `uninstall [agent]`. The agent argument is
 /// optional and today has exactly one legal value, but naming it is
 /// what keeps the command line stable when there are two.
@@ -452,24 +430,6 @@ fn hooksVerb(
     rest: []const []const u8,
     installing: bool,
 ) Outcome {
-    // Only installing. Removing hooks from a throwaway copy is a
-    // perfectly good thing to want, and it edits nothing that outlives
-    // the run.
-    if (installing and isTransientPath(paths.exe.slice())) {
-        say(io,
-            \\{s}: not installing hooks from a temporary copy.
-            \\
-            \\A hook names this binary by absolute path, and this one is
-            \\running out of an npx cache that npm deletes later. The hooks
-            \\would survive the binary and then quietly do nothing.
-            \\
-            \\  npm install -g {s}
-            \\  {s} install
-            \\
-        , .{ command_name, command_name, command_name });
-        return .handled_failed;
-    }
-
     if (rest.len > 0) {
         var known = false;
         for (agents) |agent| {
@@ -493,6 +453,32 @@ fn installHooks(
     paths: *const paths_mod.Paths,
     installing: bool,
 ) Outcome {
+    // The copy first, because the hooks are about to name it. Whatever
+    // path this process is running from — a versioned npm prefix, an
+    // npx cache — belongs to a package manager and will move.
+    var copied: runtime_copy.Outcome = .self;
+    if (installing) {
+        copied = runtime_copy.sync(io, paths) catch |err| {
+            switch (err) {
+                runtime_copy.Error.NoHomeDirectory => say(
+                    io,
+                    "No HOME/USERPROFILE in the environment.\n",
+                    .{},
+                ),
+                runtime_copy.Error.CopyFailed => say(
+                    io,
+                    \\Could not put a copy of this binary in {s}.
+                    \\
+                    \\Nothing was written: a hook pointing at {s}
+                    \\would stop working the moment that path moved, and a
+                    \\silently dead hook is worse than no hook.
+                    \\
+                , .{ paths.runtime_dir.slice(), paths.exe.slice() }),
+            }
+            return .handled_failed;
+        };
+    }
+
     const config = readConfig(io, paths);
     const report = blk: {
         if (installing) {
@@ -513,6 +499,23 @@ fn installHooks(
         paths.claude_settings.slice(),
         if (report.created) " (created)" else "",
     });
+    switch (copied) {
+        .copied => say(io, "hooks run {s}\n", .{paths.runtime_exe.slice()}),
+        .kept_stale => say(io,
+            \\
+            \\The hooks are installed and working, but the copy they run
+            \\could not be replaced with this build — something has
+            \\{s}
+            \\open, almost certainly a running AI Souls. Quit it from the
+            \\tray and run `{s} install` again to catch it up.
+            \\
+        , .{ paths.runtime_exe.slice(), command_name }),
+        .current, .self => {},
+    }
+    // Nothing left to answer the hooks, so the copy has no reason to
+    // stay. After the settings write, so a failure there leaves a
+    // working install rather than a half-dismantled one.
+    if (!installing) runtime_copy.remove(io, paths);
     return .handled_ok;
 }
 
@@ -540,6 +543,13 @@ fn reportHookError(io: std.Io, err: anyerror, paths: *const paths_mod.Paths) voi
 fn status(io: std.Io, paths: *const paths_mod.Paths) Outcome {
     const config = readConfig(io, paths);
     say(io, "executable      {s}\n", .{paths.exe.slice()});
+    // What the hooks on disk actually run, which after an install is
+    // never this process's own path.
+    if (std.Io.Dir.cwd().access(io, paths.runtime_exe.slice(), .{})) |_| {
+        say(io, "hooks run       {s}\n", .{paths.runtime_exe.slice()});
+    } else |_| {
+        say(io, "hooks run       no copy yet — run `{s} install`\n", .{command_name});
+    }
     say(io, "app             {s}\n", .{
         if (isRunning(io, paths)) "running" else "not running",
     });
@@ -726,26 +736,6 @@ test "a message carries its whole screen through the trigger file" {
 test "the settings command is not an event" {
     const parsed = parseTrigger("7 !settings").?;
     try std.testing.expectEqual(Action.settings, parsed.action);
-}
-
-test "an npx cache is recognised as temporary, and a real install is not" {
-    // The exact shapes npm uses, on both separators.
-    try std.testing.expect(isTransientPath(
-        "C:\\Users\\x\\AppData\\Local\\npm-cache\\_npx\\ab12\\node_modules\\ai-souls\\vendor\\win32-x64\\ai-souls.exe",
-    ));
-    try std.testing.expect(isTransientPath("/home/x/.npm/_npx/ab12/node_modules/ai-souls/vendor/linux-x64/ai-souls"));
-
-    // A global install, which is the whole point of telling them apart.
-    try std.testing.expect(!isTransientPath("/usr/local/lib/node_modules/ai-souls/vendor/darwin-arm64/ai-souls"));
-    try std.testing.expect(!isTransientPath(
-        "C:\\Users\\x\\AppData\\Roaming\\npm\\node_modules\\ai-souls\\vendor\\win32-x64\\ai-souls.exe",
-    ));
-    try std.testing.expect(!isTransientPath("S:\\Work\\ai-souls\\zig-out\\bin\\ai-souls.exe"));
-
-    // A segment that merely CONTAINS the marker is not the marker.
-    try std.testing.expect(!isTransientPath("/home/x/_npx_notreally/ai-souls"));
-    try std.testing.expect(!isTransientPath("/home/x/my_npx/ai-souls"));
-    try std.testing.expect(!isTransientPath(""));
 }
 
 test "no event key could ever be read as a command" {

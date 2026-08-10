@@ -218,7 +218,9 @@ fn addOurs(
     config: *const config_mod.Config,
 ) !usize {
     var installed: usize = 0;
-    const exe = paths.exe.slice();
+    // Not `paths.exe`: a hook outlives the process that wrote it, so it
+    // has to name a path that outlives the package manager too.
+    const exe = paths.hookCommand();
     if (exe.len == 0) return 0;
 
     for (souls.events, 0..) |event, index| {
@@ -302,7 +304,9 @@ fn renderApplied(
     _ = try stripOurs(arena, hooks);
     if (config) |cfg| {
         var paths: paths_mod.Paths = .{};
-        paths.exe.set("/opt/ai-souls");
+        paths.exe.set("/opt/npm/ai-souls");
+        // What install would have put there before writing anything.
+        paths.runtime_exe.set("/home/ashen/.ai-souls/bin/ai-souls");
         _ = try addOurs(arena, hooks, &paths, cfg);
     }
     try dropEmptyEventArrays(hooks);
@@ -329,7 +333,36 @@ test "install preserves unrelated settings and unrelated hooks" {
     try testing.expect(std.mem.indexOf(u8, rendered, "\"model\": \"opus\"") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "/usr/bin/say") != null);
     try testing.expect(std.mem.indexOf(u8, rendered, "\"turn_complete\"") != null);
-    try testing.expect(std.mem.indexOf(u8, rendered, "/opt/ai-souls") != null);
+    try testing.expect(std.mem.indexOf(u8, rendered, "/home/ashen/.ai-souls/bin/ai-souls") != null);
+}
+
+test "hooks name the copy under the home directory, never the package manager's path" {
+    // The regression this guards is silent and delayed: npm's global
+    // prefix is versioned and npx's cache is collected, so a hook that
+    // named either would stop working with nothing to show for it.
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var paths: paths_mod.Paths = .{};
+    paths.exe.set("/home/ashen/.npm/_npx/ab12/node_modules/ai-souls/vendor/linux-x64/ai-souls");
+    paths.runtime_exe.set("/home/ashen/.ai-souls/bin/ai-souls");
+    try testing.expectEqualStrings("/home/ashen/.ai-souls/bin/ai-souls", paths.hookCommand());
+
+    var root = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{}", .{});
+    const hooks = try hooksObject(arena, &root);
+    const config = config_mod.Config.default();
+    _ = try addOurs(arena, hooks, &paths, &config);
+    const rendered = try std.json.Stringify.valueAlloc(arena, root, .{ .whitespace = .indent_2 });
+
+    try testing.expect(std.mem.indexOf(u8, rendered, "_npx") == null);
+    try testing.expect(std.mem.indexOf(u8, rendered, ".ai-souls/bin/ai-souls") != null);
+
+    // With no home to copy into there is nothing better than the
+    // running binary — a case `install` refuses before reaching here.
+    var homeless: paths_mod.Paths = .{};
+    homeless.exe.set("/opt/ai-souls");
+    try testing.expectEqualStrings("/opt/ai-souls", homeless.hookCommand());
 }
 
 test "hooks written by the pre-rename binary are still ours to remove" {

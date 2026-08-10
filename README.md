@@ -71,12 +71,8 @@ ai-souls serve             run in the tray with no window
 today. It exists so that adding a second one does not change the shape
 of the command line.
 
-`install` needs a real install, not `npx`. A hook names this binary by
-absolute path, and npx unpacks into a cache directory that npm deletes
-later — so hooks written from there outlive the binary and then quietly
-do nothing, because they run `async` and Claude Code never sees the
-failure. `install` recognises an npx path and refuses; everything else,
-`uninstall` included, works fine from one.
+`npx ai-souls install` works too — see below for why that is not
+obvious.
 
 Anything that is not a verb is a headline, so quoting is optional and
 `--` forces the issue:
@@ -129,6 +125,46 @@ acknowledgement rather than a guess, which matters because the app can
 be alive and unable to answer — starting a sound freezes the Win32
 message loop for two seconds flat.
 
+## Why hooks run a copy
+
+A hook names its command by absolute path, and every path a package
+manager hands out is temporary in some way. npm's global prefix is
+versioned, so an upgrade moves the binary. npx is worse: it unpacks into
+a cache directory npm deletes on its own schedule, and it does not
+consult a global install either — `npx --no-install ai-souls` fails with
+"could not determine executable to run" even with the global shim on
+PATH.
+
+Neither failure would say anything. Our hooks are `async` with a five
+second timeout, so Claude Code swallows the error and the screens just
+stop appearing one day.
+
+So `install` copies the binary and the sounds into `~/.ai-souls/bin` and
+points the hooks there. That path is ours: it survives an upgrade, an
+`npm uninstall -g`, and an npx cache being collected ten minutes later.
+The copy is a whole working install rather than a launcher, so it keeps
+working alone. `uninstall` takes it away again.
+
+The alternative — making the hook itself say `npx ai-souls fire …` —
+costs too much to be on this path. Measured on the same machine, median
+of seven runs:
+
+| hook command | median |
+| --- | --- |
+| absolute path to the binary | **2 ms** |
+| `ai-souls` through the npm PATH shim | 187 ms |
+| `npx ai-souls`, package already in local `node_modules` | 695 ms |
+
+That is the best case for npx; the usual one adds a registry round trip,
+which fails offline and can outrun the hook timeout. It would also mean
+every `SessionStart` running whatever the registry currently serves under
+that name, which is a lot of standing trust for a banner.
+
+Re-running `install` refreshes the copy. If a running app is holding the
+old one open — Windows will not replace a live image — the install still
+succeeds against the existing copy and says so, rather than leaving you
+to wonder which build is answering.
+
 ## Building it yourself
 
 ```bash
@@ -147,8 +183,10 @@ other slots are filled by `.github/workflows/release.yml`, which builds
 on each runner and stages them into one package. A platform with no
 binary gets a clear error from the launcher rather than a mystery.
 
-Upgrading the package moves the binary, and installed hooks name it by
-absolute path — so run `ai-souls install` again after an upgrade.
+Upgrading moves the binary, but the hooks name a copy under
+`~/.ai-souls/bin` rather than the package, so they keep working — see
+[Why hooks run a copy](#why-hooks-run-a-copy). Re-run `ai-souls install`
+after an upgrade to bring that copy up to date.
 
 ## The catalog
 
@@ -223,6 +261,7 @@ those numbers are what `config.txt` stores.
 | `~/.ai-souls/config.txt` | per-event settings |
 | `~/.ai-souls/trigger` | the one file hooks and messages write |
 | `~/.ai-souls/alive` | heartbeat, and the newest trigger acted on |
+| `~/.ai-souls/bin/` | the copy installed hooks run, and its sounds |
 | `~/.claude/settings.json` | where the hooks are installed |
 | `~/.claude-souls/config.txt` | a pre-rename install, read once and left alone |
 

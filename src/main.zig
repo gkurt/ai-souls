@@ -382,6 +382,7 @@ test {
     _ = @import("overlay_style.zig");
     _ = @import("hooks.zig");
     _ = @import("paths.zig");
+    _ = @import("runtime_copy.zig");
     _ = @import("screen.zig");
     _ = @import("souls.zig");
     _ = @import("views.zig");
