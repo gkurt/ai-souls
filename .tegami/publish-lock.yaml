@@ -1,0 +1,30 @@
+core:changelogs:
+  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## macOS is a supported platform\n\nThe package now carries a universal macOS binary alongside the Windows\none, so Apple Silicon and Intel Macs both install a working `ai-souls`\ninstead of the \"no binary for darwin-arm64\" message.\n"
+    filename: macos-binary.md
+    v: 0.0.0
+  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n# A screen is a process — nothing stays resident\n\nAI Souls no longer leaves anything running between banners. There is no\nbackground app, no tray icon, and no polling: a hook's `ai-souls fire`\ndraws its own screen and exits with it.\n\nThe app that used to sit in the tray cost about 3.5% of a CPU core\ncontinuously, and it also meant that after a reboot nothing was\nlistening — hooks fired into a void until you happened to start the app\nby hand. Both are gone.\n\nA banner now appears about 295 ms after the hook runs, from a completely\ncold start.\n\n`ai-souls serve` is removed; it has nothing left to do. `ai-souls\nsettings` still opens the settings window, and closing that window now\nends the process rather than hiding it in the tray.\n"
+    filename: no-resident-process.md
+    v: 0.0.0
+  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n### `install` says where the settings are\n\n`npx ai-souls install` is now the recommended way in, and it leaves\nnothing on your PATH — so `install` points at the tray icon rather than\nletting you find it yourself.\n"
+    filename: npx-install.md
+    v: 0.0.0
+  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## Screens now stay up as long as their sound\n\nEvery screen was 2.6 seconds regardless of what it played, and the\noverlay stops the audio when it ends — so the You Died sting, which runs\n7.2 seconds, was chopped off less than halfway through. Every death\nscreen has been cutting itself off.\n\nA screen is now sized to its own sound by default: 7.2 seconds for You\nDied, 3.3 for the choir, 3.7 for the gong. A short sound does not\nshorten the screen — 2.6 seconds is still the floor, because that is how\nlong it takes to read one.\n\nYour own durations are untouched, and picking a longer sound in the\nsettings window will not move a slider you have set yourself — it says\nso under the slider instead, and **Reset to default** sizes it to fit.\n\nTool call failed is throttled to one screen every 30 seconds rather than\n15, now that the screen it draws is seven seconds long.\n"
+    filename: screens-outlast-their-sounds.md
+    v: 0.0.0
+  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## Every way a session starts is now its own event, and bursts are throttled\n\n`SessionStart` fires for five different reasons — a fresh start, a\nresume, a `/clear`, a fork, and the end of a compaction — and AI Souls\nused to treat them as one event that was armed by default. Opening a\nterminal got you the same screen as anything else.\n\nThey are five separate rows now, and only **Context compacted** is on\nout of the box. That is the one worth interrupting someone for:\ncompaction happens without asking, takes a while, and the session that\ncomes back has forgotten things. The other four you already know about,\nbecause you caused them.\n\nScreens are also throttled. No screen draws over one that is still up,\nand the events that arrive in bursts get a window of their own on top of\nthat — a tool failure at most once every 15 seconds, a rate limit once a\nminute. An agent that has got something wrong tends to get it wrong\ntwenty times in a row, and the twentieth screen says nothing the first\none did. The windows are per event, so a storm of failures never\nswallows the API error that follows it, and a screen you ask for by hand\nis never held back. `ai-souls status` prints what applies to what.\n\nEvery error now looks and sounds like one: **Rate limited** and **API\nerror** have joined **Tool call failed** as red You Died screens.\n"
+    filename: session-modes-and-throttling.md
+    v: 0.0.0
+core:packages:
+  - id: npm:@ai-souls/root
+    updated: false
+  - changelogIds:
+      - macos-binary.md
+      - no-resident-process.md
+      - npx-install.md
+      - screens-outlast-their-sounds.md
+      - session-modes-and-throttling.md
+    id: npm:ai-souls
+    updated: true
+npm:packages:
+  - id: npm:@ai-souls/root
+  - id: npm:ai-souls
