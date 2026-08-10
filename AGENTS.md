@@ -44,7 +44,7 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/runtime_copy.zig` | the copy under `~/.ai-souls/bin` that installed hooks actually run |
 | `src/views.zig` | both windows' widget trees |
 | `src/screen.zig` | the primary display's size, read once in `main` |
-| `src/overlay_style.zig` | the raw Win32 the SDK does not expose |
+| `src/overlay_style.zig` | the raw Win32 and AppKit the SDK does not expose |
 | `src/tests.zig` | end-to-end tests over the real update loop |
 | `npm/` | the npm package's manifest and Node launcher — **not** the published tree |
 | `tools/` | packaging and version scripts |
@@ -76,8 +76,16 @@ Invariants worth knowing before you change things:
   new timer or poll you add runs on someone's machine only while a banner is
   up — keep it that way.
 - **The settings window is hidden with a raw `SW_HIDE` in a screen process,**
-  never `fx.closeWindow`: a runtime-initiated close really destroys the window
-  and stops the app, which would kill the banner.
+  `orderOut:` on macOS, never `fx.closeWindow`: a runtime-initiated close
+  really destroys the window and stops the app, which would kill the banner.
+  Both wait for the window to be visible first — the host's own reveal
+  would undo an earlier hide.
+- **A banner must never be the active app.** On Win32 that is a window
+  style (`WS_EX_NOACTIVATE`); on macOS it is the process — the host asks
+  for `NSApplicationActivationPolicyRegular`, and a screen process
+  downgrades itself to `Accessory` and gives back any activation the
+  settings window's reveal takes. Screen processes only: a settings app
+  with no Dock tile would be a worse app.
 - **The throttle is a file, and it is decided before the window opens.**
   `fire` reads `~/.ai-souls/fired.txt`, and a screen it decides against
   costs one read and exits `handled_ok` — a hook that reported failure

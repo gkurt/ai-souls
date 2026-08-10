@@ -1,7 +1,7 @@
-//! The two things about the overlay window that the SDK's descriptor
-//! cannot say. This is the only place in the app that touches an HWND,
-//! and it is entirely best-effort: every failure path just leaves the
-//! window as the SDK made it.
+//! The things about a banner that the SDK's descriptor cannot say. This
+//! is the only place in the app that touches an HWND or sends an
+//! Objective-C message, and it is entirely best-effort: every failure
+//! path just leaves the window as the SDK made it.
 //!
 //! **It must not appear in the taskbar or Alt+Tab.** The overlay is a
 //! borderless top-level window, which on Win32 means `WS_POPUP` with no
@@ -24,9 +24,17 @@
 //! It polls fast enough to win the race against the host's first
 //! reveal, and handles the case where it does not.
 //!
-//! macOS needs none of this: `activate_on_show = false` on a
-//! `NSFloatingWindow` is already invisible to Mission Control and the
-//! app switcher.
+//! **On macOS the WINDOW needs none of that — the PROCESS does.** The
+//! descriptor's `activate_on_show = false` keeps the banner's own reveal
+//! passive, and the AppKit host honours it. But the app around it is
+//! still an ordinary foreground app: the host asks for
+//! `NSApplicationActivationPolicyRegular`, which is a Dock tile and a
+//! Cmd-Tab entry, and the settings window — always created, because
+//! `app.zon` declares it — activates the app when its own first frame
+//! reveals it. A hook's banner therefore took focus from whatever you
+//! were typing into. Both are undone in a screen process only; see
+//! `hideFromSwitcher` and the macOS half of `hideSettings`. The settings
+//! app itself still activates like any app, because someone asked for it.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -69,6 +77,87 @@ const win = struct {
     extern "kernel32" fn Sleep(milliseconds: u32) callconv(.winapi) void;
 };
 
+/// AppKit, reached the way the SDK's own host reaches it. There is no
+/// Objective-C in this project and no need for any: three messages to
+/// `NSApp` and two to a window is the whole job.
+const mac = struct {
+    const Id = ?*anyopaque;
+    const Sel = ?*anyopaque;
+
+    /// `NSApplicationActivationPolicyAccessory`: no Dock tile, no menu
+    /// bar, no Cmd-Tab entry — and windows still draw. Deliberately not
+    /// `Prohibited`, which documents itself as unable to create windows
+    /// at all, and the banner IS a window.
+    const policy_accessory: isize = 1;
+
+    extern fn objc_getClass(name: [*:0]const u8) Id;
+    extern fn sel_registerName(name: [*:0]const u8) Sel;
+    /// Never called through this declaration. arm64 has no variadic
+    /// `objc_msgSend`, so every call site casts it to the exact
+    /// signature of the message it is sending — that is the supported
+    /// way to use it, not a trick.
+    extern fn objc_msgSend() callconv(.c) void;
+
+    /// `dispatch_get_main_queue()` is a macro over this symbol, so there
+    /// is nothing to call — the queue is the address.
+    const main_queue: *anyopaque = @extern(*anyopaque, .{ .name = "_dispatch_main_q" });
+    const Work = *const fn (?*anyopaque) callconv(.c) void;
+    extern fn dispatch_async_f(queue: *anyopaque, context: ?*anyopaque, work: Work) void;
+    extern fn dispatch_after_f(when: u64, queue: *anyopaque, context: ?*anyopaque, work: Work) void;
+    extern fn dispatch_time(base: u64, delta: i64) u64;
+    const time_now: u64 = 0;
+
+    fn sel(name: [:0]const u8) Sel {
+        return sel_registerName(name.ptr);
+    }
+
+    fn app() Id {
+        return msgId(objc_getClass("NSApplication"), "sharedApplication");
+    }
+
+    fn msgId(target: Id, name: [:0]const u8) Id {
+        const send: *const fn (Id, Sel) callconv(.c) Id = @ptrCast(&objc_msgSend);
+        return send(target, sel(name));
+    }
+
+    fn msgVoid(target: Id, name: [:0]const u8) void {
+        const send: *const fn (Id, Sel) callconv(.c) void = @ptrCast(&objc_msgSend);
+        send(target, sel(name));
+    }
+
+    /// A `BOOL` is a signed char, so it is read as one: any value but 0
+    /// and 1 in a Zig `bool` would be undefined.
+    fn msgFlag(target: Id, name: [:0]const u8) bool {
+        const send: *const fn (Id, Sel) callconv(.c) i8 = @ptrCast(&objc_msgSend);
+        return send(target, sel(name)) != 0;
+    }
+
+    fn msgCount(target: Id, name: [:0]const u8) usize {
+        const send: *const fn (Id, Sel) callconv(.c) usize = @ptrCast(&objc_msgSend);
+        return send(target, sel(name));
+    }
+
+    fn msgAtIndex(target: Id, name: [:0]const u8, index: usize) Id {
+        const send: *const fn (Id, Sel, usize) callconv(.c) Id = @ptrCast(&objc_msgSend);
+        return send(target, sel(name), index);
+    }
+
+    fn msgWithId(target: Id, name: [:0]const u8, argument: Id) void {
+        const send: *const fn (Id, Sel, Id) callconv(.c) void = @ptrCast(&objc_msgSend);
+        send(target, sel(name), argument);
+    }
+
+    fn msgWithInteger(target: Id, name: [:0]const u8, argument: isize) void {
+        const send: *const fn (Id, Sel, isize) callconv(.c) i8 = @ptrCast(&objc_msgSend);
+        _ = send(target, sel(name), argument);
+    }
+
+    fn msgCString(target: Id, name: [:0]const u8) ?[*:0]const u8 {
+        const send: *const fn (Id, Sel) callconv(.c) ?[*:0]const u8 = @ptrCast(&objc_msgSend);
+        return send(target, sel(name));
+    }
+};
+
 /// How long to keep looking before giving up. The window is created
 /// during startup, so this only ever runs out if something went wrong.
 const attempts = 400;
@@ -78,15 +167,42 @@ const poll_interval_ms = 25;
 ///
 /// `title` must be the overlay's window title and must be unique to it
 /// — this is how the window is found, so the overlay does not share the
-/// settings window's title.
-pub fn adopt(title: [:0]const u16) void {
+/// settings window's title. Comptime, so a caller passes one UTF-8
+/// literal and each platform takes the encoding its own API speaks.
+pub fn adopt(comptime title: [:0]const u8) void {
     switch (builtin.os.tag) {
         .windows => {
-            const thread = std.Thread.spawn(.{}, watch, .{title}) catch return;
+            const wide = comptime std.unicode.utf8ToUtf16LeStringLiteral(title);
+            const thread = std.Thread.spawn(.{}, watch, .{wide}) catch return;
             thread.detach();
         },
         else => {},
     }
+}
+
+/// Take this process out of the Dock and the app switcher — macOS, and
+/// a screen process only.
+///
+/// The Win32 half of this is a window style (`WS_EX_TOOLWINDOW`, in
+/// `apply` below) and so belongs to the banner whichever mode it is in.
+/// The macOS half is the whole PROCESS's activation policy, which is why
+/// it cannot be done in `adopt`: a settings app that dropped out of the
+/// Dock and lost its menu bar would be a worse app. A banner has neither
+/// to lose.
+pub fn hideFromSwitcher() void {
+    if (builtin.os.tag != .macos) return;
+    // Queued rather than done here: `NSApp` does not exist until the
+    // runtime creates it inside `runner.runWithOptions`, and AppKit is
+    // the main thread's. A block queued now runs on the first turn of
+    // the run loop — after the host has asked for the policy we are
+    // replacing, and before any window has presented.
+    mac.dispatch_async_f(mac.main_queue, null, becomeAccessory);
+}
+
+fn becomeAccessory(_: ?*anyopaque) callconv(.c) void {
+    const nsapp = mac.app();
+    if (nsapp == null) return;
+    mac.msgWithInteger(nsapp, "setActivationPolicy:", mac.policy_accessory);
 }
 
 /// Put the settings window away as soon as it exists — a screen process,
@@ -105,14 +221,82 @@ pub fn adopt(title: [:0]const u16) void {
 /// always visible, so the host's occlusion heuristic already keeps the
 /// app awake, and the tray's Open item goes through `showWindow`, which
 /// puts it back either way.
-pub fn hideSettings(title: [:0]const u16) void {
+///
+/// macOS does the same with `orderOut:`, which is `SW_HIDE`'s exact
+/// counterpart — no delegate, no close, the window simply leaves the
+/// glass — and it gives back the activation that window's own reveal
+/// took. Both platforms have to WAIT for the window to be visible
+/// before hiding it: the host reveals it on its first frame, and a hide
+/// that lands earlier is undone by that reveal.
+pub fn hideSettings(comptime title: [:0]const u8) void {
     switch (builtin.os.tag) {
         .windows => {
-            const thread = std.Thread.spawn(.{}, watchHide, .{title}) catch return;
+            const wide = comptime std.unicode.utf8ToUtf16LeStringLiteral(title);
+            const thread = std.Thread.spawn(.{}, watchHide, .{wide}) catch return;
             thread.detach();
+        },
+        .macos => {
+            settings_title = title;
+            // A main-queue poll rather than a thread: AppKit may only be
+            // asked about its windows from the main thread. See
+            // `hideFromSwitcher` for why this cannot run before the
+            // runtime is up.
+            mac.dispatch_async_f(mac.main_queue, null, hideTick);
         },
         else => {},
     }
+}
+
+/// The settings window's exact title, for the macOS watcher. A screen
+/// process runs one banner and calls `hideSettings` once, so there is
+/// nothing to thread through the dispatch context.
+var settings_title: [:0]const u8 = "";
+var hide_attempts_left: usize = attempts;
+
+fn hideTick(_: ?*anyopaque) callconv(.c) void {
+    const nsapp = mac.app();
+    if (nsapp == null) return;
+    // Every tick, not just the one that finds the window: the reveal we
+    // are chasing activates the app, and a banner must never be the
+    // active app. Handing focus straight back is the closest thing to
+    // never having taken it — the host's activation is not ours to
+    // suppress at the source.
+    if (mac.msgFlag(nsapp, "isActive")) mac.msgVoid(nsapp, "deactivate");
+    if (orderOutSettings(nsapp)) return;
+    if (hide_attempts_left == 0) return;
+    hide_attempts_left -= 1;
+    mac.dispatch_after_f(
+        mac.dispatch_time(mac.time_now, poll_interval_ms * std.time.ns_per_ms),
+        mac.main_queue,
+        null,
+        hideTick,
+    );
+}
+
+/// Order the settings window off the glass. Returns true once there is
+/// nothing left to do — which is only ever after hiding it, so a
+/// process that never showed one keeps handing focus back until it
+/// runs out of attempts or exits with its banner.
+///
+/// The title is matched WHOLE, like `FindWindowExW` does: a banner's own
+/// title starts with the same two words.
+fn orderOutSettings(nsapp: mac.Id) bool {
+    const windows = mac.msgId(nsapp, "windows");
+    if (windows == null) return false;
+
+    const count = mac.msgCount(windows, "count");
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        const window = mac.msgAtIndex(windows, "objectAtIndex:", index);
+        if (window == null) continue;
+        if (!mac.msgFlag(window, "isVisible")) continue;
+        const title = mac.msgId(window, "title") orelse continue;
+        const text = mac.msgCString(title, "UTF8String") orelse continue;
+        if (!std.mem.eql(u8, std.mem.span(text), settings_title)) continue;
+        mac.msgWithId(window, "orderOut:", null);
+        return true;
+    }
+    return false;
 }
 
 /// Whether this platform can take another process's banner down, which
@@ -143,15 +327,16 @@ pub const can_dismiss = builtin.os.tag == .windows;
 /// the loser's sound playing under the winner's. Exit code 0: that
 /// process is some hook's `ai-souls fire`, still being waited on by
 /// Claude Code, and its screen being superseded is not a failure.
-pub fn dismissOthers(title: [:0]const u16) void {
+pub fn dismissOthers(comptime title: [:0]const u8) void {
     if (builtin.os.tag != .windows) return;
+    const wide = comptime std.unicode.utf8ToUtf16LeStringLiteral(title);
 
     const own_pid = win.GetCurrentProcessId();
-    var hwnd: win.HWND = win.FindWindowExW(null, null, null, title.ptr);
+    var hwnd: win.HWND = win.FindWindowExW(null, null, null, wide);
     while (hwnd != null) {
         // Read the next handle BEFORE the window's process dies: an
         // enumeration anchored on a destroyed window starts over.
-        const next = win.FindWindowExW(null, hwnd, null, title.ptr);
+        const next = win.FindWindowExW(null, hwnd, null, wide);
         var pid: u32 = 0;
         _ = win.GetWindowThreadProcessId(hwnd, &pid);
         if (pid != 0 and pid != own_pid) {
