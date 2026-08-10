@@ -25,6 +25,11 @@ const souls = @import("souls.zig");
 
 pub const Error = error{
     NoHomeDirectory,
+    /// We could not learn our own path, so there is nothing to copy
+    /// FROM. Distinct from `NoHomeDirectory` because the two used to be
+    /// one error, and reporting a macOS `realpath` failure as a missing
+    /// home directory sent people looking in the wrong place entirely.
+    NoExecutablePath,
     /// The binary could not be copied and there is no usable copy from
     /// a previous install to fall back on.
     CopyFailed,
@@ -47,7 +52,8 @@ pub const Outcome = enum {
 
 /// Make `paths.runtime_exe` be this binary, and return what that took.
 pub fn sync(io: std.Io, paths: *const paths_mod.Paths) Error!Outcome {
-    if (paths.runtime_exe.isEmpty() or paths.exe.isEmpty()) return Error.NoHomeDirectory;
+    if (paths.runtime_exe.isEmpty()) return Error.NoHomeDirectory;
+    if (paths.exe.isEmpty()) return Error.NoExecutablePath;
     if (std.mem.eql(u8, paths.exe.slice(), paths.runtime_exe.slice())) return .self;
 
     const cwd = std.Io.Dir.cwd();

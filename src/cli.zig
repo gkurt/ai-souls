@@ -358,6 +358,12 @@ fn installHooks(
                     "No HOME/USERPROFILE in the environment.\n",
                     .{},
                 ),
+                runtime_copy.Error.NoExecutablePath => say(io,
+                    \\Could not work out where this binary is, so there is
+                    \\nothing to install: a hook names its command by absolute
+                    \\path. Nothing was written.
+                    \\
+                , .{}),
                 runtime_copy.Error.CopyFailed => say(
                     io,
                     \\Could not put a copy of this binary in {s}.
@@ -409,9 +415,9 @@ fn installHooks(
     // `npx ai-souls install`, which leaves nothing on PATH.
     if (installing) say(io,
         \\
-        \\Screens now fire in every Claude Code session. Nothing stays
-        \\running between them — each screen is its own short-lived
-        \\process. To change what they say:
+        \\Hooks ready — screens now fire in every Claude Code session.
+        \\Nothing stays running between them — each screen is its own
+        \\short-lived process. To change what they say:
         \\
         \\  {s} settings
         \\

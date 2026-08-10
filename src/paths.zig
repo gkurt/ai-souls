@@ -36,6 +36,21 @@ pub const dir_name = ".ai-souls";
 /// The binary's own filename, extension and all.
 pub const exe_name = if (@import("builtin").os.tag == .windows) "ai-souls.exe" else "ai-souls";
 
+/// The buffer `std.process.executablePath` is asked to write into — not
+/// `max_path_bytes`.
+///
+/// On POSIX that call goes through libc's `realpath(3)`, which refuses
+/// outright any buffer smaller than `PATH_MAX` rather than trying and
+/// truncating. `PATH_MAX` is 1024 on macOS, so asking with our own 512
+/// failed every time there and left `exe` empty — which `install`
+/// reported as a missing home directory, and which also cost the sounds
+/// their absolute path. Ask with a buffer std will accept; keep the
+/// answer in ours.
+const exe_probe_bytes = if (@import("builtin").os.tag == .windows)
+    max_path_bytes
+else
+    @max(max_path_bytes, std.posix.PATH_MAX);
+
 pub const Paths = struct {
     /// This binary, so the installed hooks can name it and the app can
     /// re-invoke itself for the settings.json merge.
@@ -70,9 +85,12 @@ pub const Paths = struct {
     pub fn resolve(io: std.Io, environ: *const std.process.Environ.Map) Paths {
         var paths: Paths = .{};
 
-        var exe_buffer: [max_path_bytes]u8 = undefined;
+        var exe_buffer: [exe_probe_bytes]u8 = undefined;
         if (std.process.executablePath(io, &exe_buffer)) |written| {
-            paths.exe.set(exe_buffer[0..written]);
+            // A path we cannot hold in full is worse than none: the hooks
+            // name this by absolute path, and a truncated one names a
+            // file that is not there.
+            if (written <= max_path_bytes) paths.exe.set(exe_buffer[0..written]);
         } else |_| {}
 
         const home = environ.get("HOME") orelse
@@ -237,6 +255,20 @@ test "resolve builds every path from a home directory" {
     // read by default.
     try std.testing.expect(std.mem.indexOf(u8, paths.legacy_config.slice(), legacy_dir_name) != null);
     try std.testing.expect(!std.mem.eql(u8, paths.config.slice(), paths.legacy_config.slice()));
+}
+
+test "resolve finds this process's own path" {
+    // The regression this guards read as a missing home directory, and
+    // was macOS-only: see `exe_probe_bytes`. Everything downstream —
+    // the copy the hooks run, where the sounds resolve from — starts
+    // here, so an empty `exe` breaks the install outright.
+    var environ: std.process.Environ.Map = .init(std.testing.allocator);
+    defer environ.deinit();
+
+    const paths = Paths.resolve(std.testing.io, &environ);
+
+    try std.testing.expect(!paths.exe.isEmpty());
+    try std.testing.expect(std.fs.path.isAbsolute(paths.exe.slice()));
 }
 
 test "a resolved asset is absolute and single-separator" {
