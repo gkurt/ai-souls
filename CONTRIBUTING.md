@@ -182,6 +182,18 @@ takes it away again, and re-running `install` refreshes it — if a
 running app is holding the old one open, the install still succeeds
 against the existing copy and says so.
 
+Whether it needs refreshing is decided by a stamp in
+`~/.ai-souls/bin/installed.txt`: the source binary's size, modification
+time and path. The mtime is load-bearing, and its absence cost a whole
+install. Two ReleaseFast builds of this project differing by one colour
+constant come to exactly the same length (5,616,856 bytes, measured both
+times) out of the same `zig-out/bin`, so on size and path alone the stamp
+matched, the copy was skipped, and `install` reported "7 hooks written"
+while every hook went on running the previous binary. Nothing says
+anything when that happens: the hooks work, they are just the old
+program. If you are testing a local build through the hooks, check the
+stamp or hash the copy against `zig-out/bin/ai-souls`.
+
 Making the hook itself say `npx ai-souls fire …` costs too much for this
 path. Median of seven runs on the same machine:
 

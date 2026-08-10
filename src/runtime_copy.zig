@@ -97,17 +97,32 @@ pub fn remove(io: std.Io, paths: *const paths_mod.Paths) void {
 
 /// What identifies a build, for deciding whether the copy is stale.
 ///
-/// Size and where it came from, not a version string: the version in
-/// `app.zon` does not change between two development builds, and the
-/// point of the check is only ever "is this the same file".
+/// Not a version string: the version in `app.zon` does not change
+/// between two development builds, and the question is only ever "is
+/// this the same file".
+///
+/// Size and where it came from cannot answer that on their own, which
+/// cost a whole install. Two ReleaseFast builds of this project differing
+/// by one colour constant are byte-for-byte the same LENGTH — measured,
+/// 5,616,856 both times — and they come from the same `zig-out/bin`. So
+/// `install` matched the stamp, skipped the copy, said "7 hooks written"
+/// and left every hook running the previous binary. The modification
+/// time is what separates them, and it is free: the `stat` that reads
+/// the size reads it too.
 pub const Stamp = struct {
     size: u64,
+    /// Nanoseconds since the epoch, as the filesystem reports them.
+    mtime_ns: i96,
     source: []const u8,
-    buffer: [paths_mod.max_path_bytes + 32]u8 = @splat(0),
+    buffer: [paths_mod.max_path_bytes + 64]u8 = @splat(0),
     len: usize = 0,
 
     fn render(self: *Stamp) void {
-        const written = std.fmt.bufPrint(&self.buffer, "{d} {s}\n", .{ self.size, self.source }) catch "";
+        const written = std.fmt.bufPrint(
+            &self.buffer,
+            "{d} {d} {s}\n",
+            .{ self.size, self.mtime_ns, self.source },
+        ) catch "";
         self.len = written.len;
     }
 
@@ -118,7 +133,11 @@ pub const Stamp = struct {
 
 fn sourceStamp(io: std.Io, paths: *const paths_mod.Paths) ?Stamp {
     const info = std.Io.Dir.cwd().statFile(io, paths.exe.slice(), .{}) catch return null;
-    var stamp: Stamp = .{ .size = info.size, .source = paths.exe.slice() };
+    var stamp: Stamp = .{
+        .size = info.size,
+        .mtime_ns = info.mtime.nanoseconds,
+        .source = paths.exe.slice(),
+    };
     stamp.render();
     if (stamp.len == 0) return null;
     return stamp;
@@ -159,28 +178,48 @@ fn copySounds(io: std.Io, paths: *const paths_mod.Paths) void {
 
 // -------------------------------------------------------------- tests
 
-test "a stamp is the size and the source, and compares as text" {
-    var one: Stamp = .{ .size = 5_912_576, .source = "/opt/ai-souls/vendor/darwin-arm64/ai-souls" };
+test "a stamp is the size, the mtime and the source, and compares as text" {
+    var one: Stamp = .{
+        .size = 5_912_576,
+        .mtime_ns = 1_786_387_573_000_000_000,
+        .source = "/opt/ai-souls/vendor/darwin-arm64/ai-souls",
+    };
     one.render();
     try std.testing.expectEqualStrings(
-        "5912576 /opt/ai-souls/vendor/darwin-arm64/ai-souls\n",
+        "5912576 1786387573000000000 /opt/ai-souls/vendor/darwin-arm64/ai-souls\n",
         one.text(),
     );
 
     // A rebuild of a different size is a different stamp, and so is the
     // same size arriving from a different install.
-    var bigger: Stamp = .{ .size = 5_912_577, .source = one.source };
+    var bigger: Stamp = .{ .size = 5_912_577, .mtime_ns = one.mtime_ns, .source = one.source };
     bigger.render();
     try std.testing.expect(!std.mem.eql(u8, one.text(), bigger.text()));
 
-    var elsewhere: Stamp = .{ .size = one.size, .source = "/usr/local/lib/node_modules/ai-souls/x" };
+    var elsewhere: Stamp = .{
+        .size = one.size,
+        .mtime_ns = one.mtime_ns,
+        .source = "/usr/local/lib/node_modules/ai-souls/x",
+    };
     elsewhere.render();
     try std.testing.expect(!std.mem.eql(u8, one.text(), elsewhere.text()));
+
+    // The one the size alone missed: a rebuild that came out to exactly
+    // the same length, from exactly the same `zig-out/bin`. This is the
+    // ordinary case while working on the app, and it left `install`
+    // reporting success over an untouched copy.
+    var rebuilt: Stamp = .{
+        .size = one.size,
+        .mtime_ns = one.mtime_ns + 34 * std.time.ns_per_s,
+        .source = one.source,
+    };
+    rebuilt.render();
+    try std.testing.expect(!std.mem.eql(u8, one.text(), rebuilt.text()));
 }
 
 test "a stamp for an absurd path does not overflow its buffer" {
     const long = "/" ++ ("x" ** (paths_mod.max_path_bytes * 2));
-    var stamp: Stamp = .{ .size = 1, .source = long };
+    var stamp: Stamp = .{ .size = 1, .mtime_ns = 1, .source = long };
     stamp.render();
     // bufPrint failed, which the caller reads as "no stamp" rather than
     // as a match against a truncated one.
