@@ -17,7 +17,7 @@
 //      CHANGELOG.md, and `version.yml` pushes a `v<version>` tag.
 //   4. The tag runs `release.yml`, which is where the binaries are.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,48 @@ function syncAppManifest(): TegamiPlugin {
   };
 }
 
+/// What this clone's `.git/config` said before Tegami touched it.
+///
+/// Read at module scope, which is the last moment before any plugin
+/// hook can run.
+const identityBefore = {
+  "user.name": localGitConfig("user.name"),
+  "user.email": localGitConfig("user.email"),
+};
+
+function localGitConfig(key: string): string | undefined {
+  const result = spawnSync("git", ["config", "--local", "--get", key], { cwd: root, encoding: "utf8" });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+/// Put the git identity back on a developer's machine.
+///
+/// Tegami's `git` plugin — which `github()` includes — configures
+/// `user.name`/`user.email` to `github-actions[bot]` from its `initCli`
+/// hook whenever `process.env.CI` is set. It uses a plain `git config`,
+/// so it writes to THIS clone's `.git/config` and stays there, and the
+/// next commit you make is authored by the bot.
+///
+/// That is correct on a runner, where the checkout is thrown away. It is
+/// not correct anywhere else, and `CI` is set by plenty of things that
+/// are not GitHub Actions. There is no option to turn it off, so undo it
+/// — restoring exactly what was there, rather than blindly unsetting,
+/// because a repo-local identity may have been someone's deliberate
+/// choice.
+function keepGitIdentity(): TegamiPlugin {
+  return {
+    name: "keep-git-identity",
+    enforce: "post",
+    initCli() {
+      if (process.env.GITHUB_ACTIONS === "true") return;
+      for (const [key, before] of Object.entries(identityBefore)) {
+        const args = before === undefined ? ["config", "--unset", key] : ["config", key, before];
+        spawnSync("git", args, { cwd: root });
+      }
+    },
+  };
+}
+
 const pkg = JSON.parse(await readFile(join(root, "npm", "package.json"), "utf8"));
 if (pkg.private !== true) {
   throw new Error(
@@ -56,6 +98,7 @@ if (pkg.private !== true) {
 const paper = tegami({
   plugins: [
     syncAppManifest(),
+    keepGitIdentity(),
     github({
       repo: "gkurt/ai-souls",
       versionPr: { base: "main" },

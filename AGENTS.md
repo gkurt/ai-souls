@@ -80,10 +80,14 @@ Why they would care.
 `packages` takes `major` / `minor` / `patch`. Keep entries short and about
 behaviour, not implementation.
 
-`bun run tegami` is the only Tegami command to run locally. **Don't run
-`tegami version`** — it is CI's job, and its GitHub plugin rewrites this repo's
-`user.name`/`user.email` to the Actions bot as a side effect, which then authors
-your next commit.
+`bun run tegami` is the only Tegami command you need locally — `version` and
+`ci` are the workflows' job.
+
+Tegami's `git` plugin rewrites this clone's `user.name`/`user.email` to
+`github-actions[bot]` whenever `CI` is set in the environment, for any of its
+commands. `scripts/tegami.mts` puts the identity back afterwards, so setting
+`CI=1` to skip the interactive prompts is safe — but if you invoke Tegami some
+other way, check `git config --local --get-regexp '^user\.'` before committing.
 
 The rest is automatic: `version.yml` opens a Version Packages PR, merging it
 tags `v<version>`, and `release.yml` builds both platforms and drafts the
