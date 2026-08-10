@@ -41,6 +41,7 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/cli.zig` | every verb but the banner itself (`install`, `fire`, `set`, `status`, …) |
 | `src/console.zig` | where CLI output goes on Windows, where a GUI-subsystem binary has no terminal to print to |
 | `src/hooks.zig` | the JSON merge into `~/.claude/settings.json` |
+| `src/hook_input.zig` | the payload Claude Code writes to a hook's stdin, and the Bash call `fire` checks in it |
 | `src/paths.zig` | every path the app knows, resolved once |
 | `src/runtime_copy.zig` | the copy under `~/.ai-souls/bin` that installed hooks actually run |
 | `src/views.zig` | the banner's widget tree |
@@ -115,6 +116,17 @@ Invariants worth knowing before you change things:
   file. `console.out` keeps a redirected handle (a pipe is a parent
   reading us, and `status > file` must work) and otherwise attaches to
   the parent's console. Print through `say`, never `File.stdout()`.
+- **A hook's `if` rule is an optimisation, not a decision.** Claude
+  Code honours `"if": "Bash(git commit:*)"`, but its Bash matcher
+  fails OPEN on shell text its parser will not model — `echo
+  {alpha,beta}` was enough — and then the rule matches every Bash
+  call. So a row narrowed to one command says so in `condition`,
+  `Event.requiredCommand` reads the command back off that rule (one
+  source of truth, no second field to drift), and `fire` checks it
+  against `tool_input.command` in the payload on stdin before drawing.
+  Everything unknown draws: no payload, a tty, a shape we cannot
+  parse. See `hook_input.zig`, and never make a new row's correctness
+  rest on `if` alone.
 - **The throttle is a file, and it is decided before the window opens.**
   `fire` reads `~/.ai-souls/fired.txt`, and a screen it decides against
   costs one read and exits `handled_ok` — a hook that reported failure

@@ -31,7 +31,8 @@ extension runs it on save, and nothing in CI checks style.
 allocation-free codec (so `update` can parse and serialize without an
 allocator), `src/throttle.zig` the on-disk record of when each event
 last drew, `src/app.zig` the whole Model/Msg/update, `src/views.zig`
-the banner's widget tree, `src/hooks.zig` the JSON merge, and
+the banner's widget tree, `src/hooks.zig` the JSON merge,
+`src/hook_input.zig` the payload a hook is handed on stdin, and
 `src/cli.zig` every verb but the banner itself.
 
 `update` never reads the clock, the environment, or the filesystem
@@ -52,6 +53,36 @@ A hook's `fire` reads the config, and if that event is off it exits
 before touching a window system at all. If it is on, the process becomes
 the banner, holds it, and quits with it. Measured on Windows from a
 completely dead start, four runs: visible at 269–458 ms, median 295 ms.
+
+### Why "Commit made" checks the command twice
+
+"PR created" and "Commit made" both subscribe to `PostToolUse` on `Bash`,
+so both need narrowing to one call out of every command a session runs.
+The hook entry carries Claude Code's `if` rule for that —
+`"if": "Bash(git commit:*)"` — and it is honoured, but its Bash matcher
+**fails open**: when the shell text is something the static analyser will
+not model, the rule matches everything rather than nothing. `echo
+{alpha,beta}` is enough to do it; so are a heredoc with an unquoted
+delimiter, a redirect it cannot account for, and a parse it had to
+abandon. The result was both screens firing for unrelated Bash calls,
+several times a session.
+
+So the rule is an optimisation — it saves spawning us for the commands
+Claude Code does recognise — and the decision belongs to `fire`. Claude
+Code writes the hook payload to our stdin, `src/hook_input.zig` reads
+`tool_input.command` out of it, and a row that names a command
+(`Event.requiredCommand`, read back off the rule so the two cannot
+drift) draws only if that command really runs it. The question is the
+same one the permission rule asks — the command has to begin a command
+and be the whole of the words it spans, so `cd repo && git commit -m x`
+counts and `grep -rn 'git commit'` does not.
+
+Only those rows read stdin, and a payload we cannot make sense of draws:
+the gate is there to catch a hook that fired for the wrong Bash call, not
+to invent a new way to lose one. `ai-souls fire commit_made` typed into a
+terminal still shows you the screen — stdin is a tty, so there is no
+payload to check, and blocking a banner on someone typing would be worse
+than a banner too many.
 
 This replaced a resident app that held an always-open transparent window
 and polled a trigger file five times a second, on the belief that

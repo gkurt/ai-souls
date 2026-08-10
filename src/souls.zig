@@ -175,6 +175,11 @@ pub const Event = struct {
     matcher_label: []const u8 = "",
     /// Permission-rule narrowing (`"if"`), so "PR created" can mean the
     /// one Bash call that creates a PR rather than every Bash call.
+    ///
+    /// An optimisation, not a decision. Claude Code's matcher for it
+    /// fails open on shell text its parser will not model, so the row
+    /// checks the command for itself as well — see `requiredCommand` and
+    /// `hook_input`.
     condition: []const u8 = "",
 
     /// Shortest gap between two of THIS event's screens, in
@@ -213,6 +218,23 @@ pub const Event = struct {
     default_style: Style,
     default_sound: Sound,
     default_enabled: bool,
+
+    /// The Bash command this row is narrowed to — "git commit" — or ""
+    /// for a row that is about a whole tool rather than one call.
+    ///
+    /// Read back off `condition` rather than stored beside it: there is
+    /// one place a row says which command it is about, and so no way for
+    /// the two to disagree. A `condition` that is not a plain
+    /// `Bash(<command>:*)` rule yields nothing, which leaves the hook's
+    /// own filtering as the only word on it.
+    pub fn requiredCommand(event: Event) []const u8 {
+        const open = "Bash(";
+        const close = ":*)";
+        if (event.condition.len < open.len + close.len) return "";
+        if (!std.mem.startsWith(u8, event.condition, open)) return "";
+        if (!std.mem.endsWith(u8, event.condition, close)) return "";
+        return event.condition[open.len .. event.condition.len - close.len];
+    }
 };
 
 /// The matcher covering every `StopFailure` error type that is not the
@@ -674,6 +696,38 @@ test "the sound numbering on disk never moves" {
     try std.testing.expectEqual(@as(u8, 0), @intFromEnum(Sound.none));
     try std.testing.expectEqual(@as(u8, 1), @intFromEnum(Sound.gong));
     try std.testing.expectEqual(@as(u8, 6), @intFromEnum(Sound.you_died));
+}
+
+test "a row narrowed to one command names one we can check for ourselves" {
+    // The hook's `if` rule is not load-bearing — Claude Code's matcher
+    // for it says yes to every Bash call whose shell text its parser
+    // will not model — so a row that has one has to be checkable
+    // without it. A rule shape `requiredCommand` cannot read back is
+    // therefore a row that quietly fires for everything.
+    var narrowed: usize = 0;
+    for (events) |event| {
+        if (event.condition.len == 0) continue;
+        narrowed += 1;
+        try std.testing.expect(event.requiredCommand().len > 0);
+        // The tool the rule names has to be the one the matcher lets
+        // through, or the two are narrowing different things.
+        try std.testing.expect(std.mem.indexOf(u8, event.matcher, "Bash") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 2), narrowed);
+
+    try std.testing.expectEqualStrings(
+        "git commit",
+        events[indexOfKey("commit_made").?].requiredCommand(),
+    );
+    try std.testing.expectEqualStrings(
+        "gh pr create",
+        events[indexOfKey("pr_created").?].requiredCommand(),
+    );
+    // And a row with no rule asks nothing of the command.
+    try std.testing.expectEqualStrings(
+        "",
+        events[indexOfKey("turn_complete").?].requiredCommand(),
+    );
 }
 
 test "a matcher that is an alternation carries a readable label" {

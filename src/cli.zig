@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 const souls = @import("souls.zig");
 const config_mod = @import("config.zig");
 const console = @import("console.zig");
+const hook_input = @import("hook_input.zig");
 const hooks = @import("hooks.zig");
 const paths_mod = @import("paths.zig");
 const runtime_copy = @import("runtime_copy.zig");
@@ -165,6 +166,13 @@ fn fire(io: std.Io, paths: *const paths_mod.Paths, rest: []const []const u8) Out
     // happen here too, and exiting quietly is the whole response.
     if (!config.events[index].enabled) return .handled_ok;
 
+    // A row narrowed to one Bash call checks that call for itself. Its
+    // hook carries an `if` rule that was supposed to have settled this,
+    // and for the commands Claude Code's parser can model it does — but
+    // on the ones it cannot the rule matches everything, and "Commit
+    // made" fires for any Bash call at all. See `hook_input`.
+    if (!allowsCommand(io, souls.events[index])) return .handled_ok;
+
     // Quietly, and with the same exit status as a screen that drew: as
     // far as Claude Code is concerned the hook did its job either way,
     // and a hook that chatters about the screens it decided against
@@ -173,6 +181,18 @@ fn fire(io: std.Io, paths: *const paths_mod.Paths, rest: []const []const u8) Out
     var stamps = throttle.load(io, paths);
     if (!stamps.allows(index, nowMs(io))) return .handled_ok;
     return armScreen(io, paths, &stamps, index, entry);
+}
+
+/// Is the Bash call Claude Code is reporting the one this row is about?
+///
+/// Costs nothing for the rows that are about a whole tool: they never
+/// name a command, so nothing reads the payload. Ordered before the
+/// throttle so a screen this turns down does not also consume the
+/// event's quiet window.
+fn allowsCommand(io: std.Io, event: souls.Event) bool {
+    if (event.requiredCommand().len == 0) return true;
+    var buffer: [hook_input.max_bytes]u8 = undefined;
+    return hook_input.allows(event, hook_input.readPayload(io, &buffer));
 }
 
 /// Record a screen as about to be drawn, and hand it to `main`.

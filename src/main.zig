@@ -404,6 +404,7 @@ test {
     _ = @import("config.zig");
     _ = @import("console.zig");
     _ = @import("overlay_style.zig");
+    _ = @import("hook_input.zig");
     _ = @import("hooks.zig");
     _ = @import("paths.zig");
     _ = @import("runtime_copy.zig");
