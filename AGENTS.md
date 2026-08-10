@@ -24,7 +24,10 @@ There is no lint or format step. `zig fmt` is the formatter and the Zig
 extension runs it on save; nothing in CI checks style.
 
 `native build`/`native test` take `-D` flags straight through to `zig build`,
-which is how CI pins targets: `native build --yes -Dtarget=aarch64-macos`.
+which is how CI pins targets and silences the runtime's trace output:
+`native build --yes -Dtrace=off -Dtarget=aarch64-macos`. **Release builds need
+`-Dtrace=off`** — the default is `events`, and since `fire` boots the runtime
+in the foreground, that chatter lands on the hook's stdout.
 
 ## Project structure
 
@@ -57,9 +60,13 @@ Two invariants worth knowing before you change things:
 
 - **The `Sound` and event enums are serialized as integers** into
   `~/.ai-souls/config.txt`. Append to them; never reorder.
-- **The overlay window is created once at startup and never destroyed.** It is
-  transparent and click-through, and `fx.closeWindow` really does destroy it
-  and stop the app — hiding is `SW_HIDE` from the helper thread.
+- **A screen is a process.** `fire` resolves the event and becomes the banner;
+  when the overlay ends it calls `fx.quitApp()`. Nothing is resident, so any
+  new timer or poll you add runs on someone's machine only while a banner is
+  up — keep it that way.
+- **The settings window is hidden with a raw `SW_HIDE` in a screen process,**
+  never `fx.closeWindow`: a runtime-initiated close really destroys the window
+  and stops the app, which would kill the banner.
 
 ## Releasing
 

@@ -117,7 +117,7 @@ jobs:
           mkdir -p out
           for target in ${{ matrix.targets }}; do
             echo "::group::$target"
-            native build --yes -Dtarget="$target"
+            native build --yes -Dtrace=off -Dtarget="$target"
             mv "zig-out/bin/${{ matrix.exe }}" "out/$target"
             echo "::endgroup::"
           done

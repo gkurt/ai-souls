@@ -8,7 +8,7 @@
 //!
 //! One binary, several jobs (see `cli.zig`). This file is the app: it
 //! resolves the paths and the display size that `update` is not allowed
-//! to look up, declares the shell window and the tray item, and wires
+//! to look up, declares the shell window, and wires
 //! the two views onto the `UiApp` loop.
 
 const std = @import("std");
@@ -23,6 +23,7 @@ const platform = native_sdk.platform;
 
 const app = @import("app.zig");
 const cli = @import("cli.zig");
+const config_mod = @import("config.zig");
 const overlay_style = @import("overlay_style.zig");
 const paths_mod = @import("paths.zig");
 const screen = @import("screen.zig");
@@ -54,9 +55,10 @@ const display_name = "AI Souls";
 const overlay_window_title = "AI Souls Overlay";
 const overlay_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(overlay_window_title);
 
-/// The settings window's title, for the same reason: `serve` finds it
-/// by title to put it away. `FindWindowExW` matches the whole title, so
-/// this and `overlay_window_title` never collide despite the prefix.
+/// The settings window's title, for the same reason: a screen process
+/// finds it by title to put it away. `FindWindowExW` matches the whole
+/// title, so this and `overlay_window_title` never collide despite the
+/// prefix.
 const settings_window_title_w = std.unicode.utf8ToUtf16LeStringLiteral(display_name);
 
 // ---------------------------------------------------------------- type
@@ -109,9 +111,9 @@ const shell_windows = [_]native_sdk.ShellWindow{.{
     .min_height = 520,
     .restore_state = false,
     .restore_policy = .center_on_primary,
-    // Closing the window must not stop the hooks from firing — the app
-    // lives in the tray and the window comes back from there.
-    .close_policy = .hide,
+    // Closing the settings window ends the process. The hooks do not
+    // depend on it — each one starts its own.
+    .close_policy = .quit,
     .views = &shell_views,
 }};
 
@@ -155,26 +157,22 @@ fn tokens(model: *const Model) canvas.DesignTokens {
 
 // --------------------------------------------------- windows and views
 
-/// The overlay window is declared for the whole life of the app, not
-/// just while a screen is playing.
+/// The overlay window, declared for as long as the process lives —
+/// which for a screen process is the length of one banner.
 ///
-/// The SDK's model is presence-is-visibility, and declaring it on
-/// demand is the obvious shape — but a canvas window is created
-/// ordered-out and only revealed on its first present, and on the Win32
-/// host that reveal lands ~2.5s late (the host's deferred-show safety
-/// deadline). A 2.6s screen would spend its whole life invisible and
-/// flash once as it died. Holding one window open and letting the view
-/// be EMPTY when idle pays that latency once, at startup, and every
-/// screen after it is instant.
+/// It used to be held open permanently by a resident app, on the belief
+/// that a canvas window takes ~2.5s to reveal. That is not what the host
+/// does. A canvas window is created ordered-out and shown on its first
+/// successful present; the deferred-show deadline is only a safety net
+/// for a window that never presents, and it is 1s, not 2.5. Measured on
+/// Win32, SDK 0.8.1, five runs: window created 115-211 ms after the
+/// request and VISIBLE at 191-318 ms, median 275 ms — the deadline is
+/// never reached. Cheap enough that a screen can be a whole process,
+/// which is what let the resident app go.
 ///
-/// An idle overlay is a fully transparent, click-through, borderless
-/// window that paints nothing, so nothing about it is observable.
-///
-/// It is also only as tall as the banner, not as tall as the display —
-/// see `app.bandHeight`, where that turns out to be the whole framerate
-/// budget. The geometry is a pure function of the display size, fixed
-/// for the life of the app, so nothing here ever moves the window and
-/// re-triggers the reveal cost.
+/// It is only as tall as the banner, not as tall as the display — see
+/// `app.bandHeight`, where that turns out to be the whole framerate
+/// budget.
 fn declaredWindows(
     model: *const Model,
     scratch: *SoulsApp.WindowsScratch,
@@ -212,45 +210,20 @@ fn windowView(ui: *AppUi, model: *const Model, window_label: []const u8) AppUi.N
     return views.settingsView(ui, model);
 }
 
-// ------------------------------------------------------------- the tray
-
-const tray_open_command = "tray.open";
-const tray_quit_command = "tray.quit";
-
-fn statusItem(
-    model: *const Model,
-    scratch: *SoulsApp.StatusItemScratch,
-) SoulsApp.StatusItemState {
-    scratch.items[0] = .{ .id = 1, .label = "Open AI Souls", .command = tray_open_command };
-    scratch.items[1] = .{ .id = 2, .label = "Quit", .command = tray_quit_command };
-    const title = std.fmt.bufPrint(
-        &scratch.title_buffer,
-        "Souls {d}",
-        .{model.enabledCount()},
-    ) catch display_name;
-    return .{ .title = title, .items = scratch.items[0..2] };
-}
-
-fn onCommand(name: []const u8) ?Msg {
-    if (std.mem.eql(u8, name, tray_open_command)) return Msg.open_settings;
-    if (std.mem.eql(u8, name, tray_quit_command)) return Msg.quit_app;
-    return null;
-}
-
 // --------------------------------------------------------------- entry
 
 pub fn initialModel(
     paths: paths_mod.Paths,
     size: screen.Size,
     opaque_overlay: bool,
-    start_hidden: bool,
+    screen_only: ?config_mod.EventSettings,
 ) Model {
     return .{
         .paths = paths,
         .screen_width = size.width,
         .screen_height = size.height,
         .overlay_transparent = !opaque_overlay,
-        .start_hidden = start_hidden,
+        .screen_only = screen_only,
     };
 }
 
@@ -269,23 +242,24 @@ pub fn main(init: std.process.Init) !void {
     // for a window system it will never use.
     const args = init.minimal.args.toSlice(arena) catch &[_][]const u8{};
     const mode = cli.run(init.gpa, io, args, &paths);
-    switch (mode) {
+    const screen_only: ?config_mod.EventSettings = switch (mode) {
         .handled_ok => return,
         // Exit rather than returning an error: the verb already printed
         // something a human can act on, and a Zig error trace stapled
         // underneath it would only be noise.
         .handled_failed => std.process.exit(1),
-        .run_app, .run_app_hidden => {},
-    }
+        .run_app => null,
+        .run_screen => |entry| entry,
+    };
 
     // The overlay window does not exist yet — this waits for it, then
     // fixes the two things the descriptor cannot express. See
     // `overlay_style` for why neither can be done declaratively.
     overlay_style.adopt(overlay_window_title_w);
-    // `serve`: the app was started to answer a message, so the settings
-    // window goes straight away rather than opening over the banner it
-    // was started to draw.
-    if (mode == .run_app_hidden) overlay_style.hideSettings(settings_window_title_w);
+    // This process exists to draw one banner. The settings window is
+    // still the shell window the SDK insists on, so it is pushed out of
+    // sight rather than opening over the very screen we were asked for.
+    if (screen_only != null) overlay_style.hideSettings(settings_window_title_w);
 
     const app_state = try SoulsApp.create(std.heap.page_allocator, .{
         .name = app_name,
@@ -296,8 +270,6 @@ pub fn main(init: std.process.Init) !void {
         .view = views.settingsView,
         .window_view = windowView,
         .windows_fn = declaredWindows,
-        .status_item_fn = statusItem,
-        .on_command = onCommand,
         .update_fx = app.update,
         .init_fx = app.init,
     });
@@ -311,7 +283,7 @@ pub fn main(init: std.process.Init) !void {
         paths,
         screen.primary(),
         opaque_overlay,
-        mode == .run_app_hidden,
+        screen_only,
     );
 
     try runner.runWithOptions(app_state.app(), .{

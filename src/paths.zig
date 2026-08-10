@@ -45,12 +45,6 @@ pub const Paths = struct {
     app_dir: PathText = .{},
     /// `~/.ai-souls/config.txt`
     config: PathText = .{},
-    /// `~/.ai-souls/trigger` — the one file hooks write and the
-    /// running app polls.
-    trigger: PathText = .{},
-    /// `~/.ai-souls/alive` — a timestamp the running app refreshes, so
-    /// the CLI can tell whether anything is listening to the trigger.
-    alive: PathText = .{},
     /// `~/.ai-souls/bin` — the copy of the binary that installed hooks
     /// run, with the sounds beside it. See `runtime_copy.zig` for why a
     /// hook must never name the package manager's own path.
@@ -86,8 +80,6 @@ pub const Paths = struct {
         if (home.len > 0) {
             paths.app_dir.set(join(&scratch, home, dir_name));
             paths.config.set(join(&scratch, paths.app_dir.slice(), "config.txt"));
-            paths.trigger.set(join(&scratch, paths.app_dir.slice(), "trigger"));
-            paths.alive.set(join(&scratch, paths.app_dir.slice(), "alive"));
             paths.runtime_dir.set(join(&scratch, paths.app_dir.slice(), "bin"));
             const runtime_dir = join(&dir_buffer, paths.app_dir.slice(), "bin");
             paths.runtime_exe.set(join(&scratch, runtime_dir, exe_name));
@@ -219,8 +211,6 @@ test "resolve builds every path from a home directory" {
     try std.testing.expect(std.mem.endsWith(u8, paths.claude_settings.slice(), "settings.json"));
     try std.testing.expect(std.mem.indexOf(u8, paths.claude_settings.slice(), ".claude") != null);
     try std.testing.expect(std.mem.endsWith(u8, paths.config.slice(), "config.txt"));
-    try std.testing.expect(std.mem.endsWith(u8, paths.trigger.slice(), "trigger"));
-    try std.testing.expect(std.mem.endsWith(u8, paths.alive.slice(), "alive"));
     // The copy hooks run lives under our directory, not the package
     // manager's, and it is a file inside the directory beside it.
     try std.testing.expect(std.mem.startsWith(u8, paths.runtime_dir.slice(), paths.app_dir.slice()));

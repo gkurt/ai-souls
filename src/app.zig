@@ -22,32 +22,13 @@ pub const settings_window_label = "main";
 
 /// Effect keys. Timers, files, spawns, and audio each live in their own
 /// namespace, but keeping them globally distinct makes the log readable.
-const key_poll_timer: u64 = 1;
 const key_anim_timer: u64 = 2;
 const key_sound_timer: u64 = 3;
 const key_config_read: u64 = 10;
 const key_config_write: u64 = 11;
-const key_trigger_read: u64 = 12;
-const key_alive_write: u64 = 13;
 const key_hooks_spawn: u64 = 20;
 const key_audio: u64 = 30;
 
-/// How often the app looks at the trigger file. Fast enough that a
-/// screen feels like a reaction, slow enough to be free.
-const poll_interval_ms: u64 = 200;
-
-/// How often the idle heartbeat goes into `~/.ai-souls/alive`, in poll
-/// ticks — once every two seconds. `stampAlive` also runs the moment a
-/// trigger is consumed, which is the write the CLI is actually waiting
-/// on; this slow beat exists so `ai-souls status` can say whether
-/// anything is home.
-const alive_every_ticks: u32 = 10;
-
-/// A trigger already on disk at boot is normally history — a fire from
-/// while the app was closed, which must not ambush the user now. Inside
-/// this window it is the opposite: the CLI writes a trigger and THEN
-/// starts the app precisely so it will be shown.
-const boot_replay_window_ms: i64 = 10_000;
 /// Overlay animation cadence: one tick per 60 Hz frame.
 ///
 /// Asking for LESS does not buy more frames, and measurably costs some.
@@ -251,19 +232,11 @@ pub const Model = struct {
 
     overlay: Overlay = .{},
 
-    /// Newest trigger stamp the app has acted on. Seeded at boot from
-    /// whatever is already on disk, so a fire that happened while the
-    /// app was closed does not ambush the next launch.
-    last_trigger_ms: i64 = 0,
-    trigger_seeded: bool = false,
-    /// Poll ticks since boot, so the heartbeat can ride a slower beat
-    /// than the trigger read does.
-    poll_ticks: u32 = 0,
-    /// Something happened that `~/.ai-souls/alive` has not reported
-    /// yet. The next poll tick writes it (see `stampAlive`).
-    alive_dirty: bool = false,
-    /// Launched as `ai-souls serve`: go straight to the tray.
-    start_hidden: bool = false,
+    /// The one screen this process exists to draw, if it was started to
+    /// draw one. Set from the command line before `init`; when it is
+    /// present the settings window never appears and the process exits
+    /// with the banner.
+    screen_only: ?config_mod.EventSettings = null,
 
     /// Primary display size in logical points, measured in `main`.
     screen_width: f32 = 1440,
@@ -322,11 +295,9 @@ pub const Msg = union(enum) {
     // ---- effect results
     config_loaded: native_sdk.EffectFileResult,
     config_saved: native_sdk.EffectFileResult,
-    trigger_read: native_sdk.EffectFileResult,
     hooks_line: native_sdk.EffectLine,
     hooks_exit: native_sdk.EffectExit,
     audio_event: native_sdk.EffectAudio,
-    poll_tick: native_sdk.EffectTimer,
     anim_tick: native_sdk.EffectTimer,
     sound_tick: native_sdk.EffectTimer,
 
@@ -335,11 +306,9 @@ pub const Msg = union(enum) {
     pub const view_unbound = .{
         "config_loaded",
         "config_saved",
-        "trigger_read",
         "hooks_line",
         "hooks_exit",
         "audio_event",
-        "poll_tick",
         "anim_tick",
         "sound_tick",
     };
@@ -347,14 +316,16 @@ pub const Msg = union(enum) {
 
 pub const Effects = native_sdk.Effects(Msg);
 
-/// Boot: start the trigger poll and load the saved config.
+/// Boot.
+///
+/// A screen process goes straight to the banner: its settings were
+/// already resolved by the CLI, so there is nothing to wait for and
+/// nothing to poll. The settings window loads the config instead.
 pub fn init(model: *Model, fx: *Effects) void {
-    fx.startTimer(.{
-        .key = key_poll_timer,
-        .interval_ms = poll_interval_ms,
-        .mode = .repeating,
-        .on_fire = Effects.timerMsg(.poll_tick),
-    });
+    if (model.screen_only) |entry| {
+        showEntry(model, fx, entry);
+        return;
+    }
     if (!model.paths.config.isEmpty()) {
         fx.readFile(.{
             .key = key_config_read,
@@ -472,38 +443,6 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
                 model.status.set("Could not write the settings file.");
             }
         },
-        .trigger_read => |result| {
-
-            // The FIRST poll result settles the baseline whatever it
-            // says — including "no such file", which is the ordinary
-            // first-run answer. Seeding only on a successful read would
-            // make the very first real fire look like the baseline and
-            // swallow it.
-            const first_poll = !model.trigger_seeded;
-            model.trigger_seeded = true;
-
-            if (result.outcome != .ok) return;
-            const trigger = cli.parseTrigger(result.bytes) orelse return;
-            if (first_poll) {
-                model.last_trigger_ms = trigger.stamp_ms;
-                // Old news is swallowed; a trigger written seconds ago
-                // is the reason this process exists (see
-                // `boot_replay_window_ms`) and is shown.
-                const age = fx.wallMs() - trigger.stamp_ms;
-                // Acknowledged either way: a CLI still waiting on this
-                // stamp should stop waiting rather than start a second
-                // app because we decided the trigger was history.
-                model.alive_dirty = true;
-                if (age < 0 or age > boot_replay_window_ms) return;
-                dispatchTrigger(model, fx, trigger.action);
-                return;
-            }
-            if (trigger.stamp_ms == model.last_trigger_ms) return;
-            model.last_trigger_ms = trigger.stamp_ms;
-            // A CLI may be timing this one.
-            model.alive_dirty = true;
-            dispatchTrigger(model, fx, trigger.action);
-        },
         .hooks_line => |line| {
             // The CLI prints one summary line; surface it verbatim.
             model.status.set(std.mem.trim(u8, line.line, " \r\n"));
@@ -532,23 +471,6 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             advanceOverlay(model, fx);
         },
 
-        .poll_tick => |timer| {
-            if (timer.outcome != .fired) return;
-            model.poll_ticks +%= 1;
-            // One writer, one key, at most once per tick — see
-            // `stampAlive` for why it is not written where it is
-            // earned.
-            if (model.alive_dirty or model.poll_ticks % alive_every_ticks == 1) {
-                model.alive_dirty = false;
-                stampAlive(model, fx);
-            }
-            if (model.paths.trigger.isEmpty()) return;
-            fx.readFile(.{
-                .key = key_trigger_read,
-                .path = model.paths.trigger.slice(),
-                .on_result = Effects.fileMsg(.trigger_read),
-            });
-        },
         .anim_tick => |timer| {
             if (timer.outcome != .fired) return;
             advanceOverlay(model, fx);
@@ -561,55 +483,6 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
             if (!model.overlay.active) return;
             playSound(model, fx, model.overlay.entry.sound, model.overlay.entry.volume);
         },
-    }
-}
-
-/// Write `~/.ai-souls/alive`: when we last drew breath, and the newest
-/// trigger stamp we have acted on.
-///
-/// The second number is the whole point. `ai-souls "..."` writes a
-/// trigger and then waits to see it acknowledged here — a heartbeat
-/// alone can only say "something was alive recently", which is not the
-/// same question and gets the answer wrong for several seconds after a
-/// crash.
-///
-/// Called ONLY from the poll tick, with `alive_dirty` standing in for
-/// "there is something new to say". Writing it where the trigger is
-/// actually consumed would put two writes on one effect key inside a
-/// single tick — the tick's own heartbeat and the acknowledgement —
-/// and the second would be dropped for the first still being in
-/// flight. That is a one-in-ten coin flip on the acknowledgement the
-/// CLI is timing.
-///
-/// Fire-and-forget: nothing sensible can be done about a failed write,
-/// and the CLI has its own fallback.
-fn stampAlive(model: *Model, fx: *Effects) void {
-    if (model.paths.alive.isEmpty()) return;
-    var buffer: [48]u8 = undefined;
-    const text = std.fmt.bufPrint(&buffer, "{d} {d}\n", .{
-        fx.wallMs(),
-        model.last_trigger_ms,
-    }) catch return;
-    fx.writeFile(.{
-        .key = key_alive_write,
-        .path = model.paths.alive.slice(),
-        .bytes = text,
-    });
-}
-
-fn dispatchTrigger(model: *Model, fx: *Effects, action: cli.Action) void {
-    switch (action) {
-        // A disabled event may still have a hook on disk — the hook set
-        // only catches up at the next install — so the arming check
-        // belongs here as well as in the installer.
-        .event => |index| {
-            if (!model.config.events[index].enabled) return;
-            showScreen(model, fx, index);
-        },
-        // Asked for by name from a terminal: shown as asked, whatever
-        // the catalog happens to be set to.
-        .message => |entry| showEntry(model, fx, entry),
-        .settings => fx.showWindow(settings_window_label),
     }
 }
 
@@ -677,6 +550,8 @@ fn advanceOverlay(model: *Model, fx: *Effects) void {
         // was ever due; the pending start has to go with it.
         fx.cancelTimer(key_sound_timer);
         fx.stopAudio();
+        // The whole reason this process exists is over.
+        if (model.screen_only != null) fx.quitApp();
     }
 }
 

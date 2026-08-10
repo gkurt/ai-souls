@@ -9,9 +9,9 @@
     .icons = .{"assets/icon.png"},
     .platforms = .{ "macos", "windows", "linux" },
     .permissions = .{ "view", "command" },
-    // `tray` is what lets the settings window close to a status item
-    // instead of quitting: the app has to stay alive to answer hooks.
-    .capabilities = .{ "native_views", "gpu_surfaces", "tray" },
+    // No tray: nothing survives a screen, so a status item would appear
+    // for the 2.6 seconds a banner is up and vanish with it.
+    .capabilities = .{ "native_views", "gpu_surfaces" },
     .shell = .{
         .windows = .{
             .{
@@ -23,7 +23,9 @@
                 .min_height = 520,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",
-                .close_policy = "hide",
+                // Closing the settings window ends the process. There is
+                // nothing for it to go on doing.
+                .close_policy = "quit",
                 .views = .{
                     .{ .label = "settings-canvas", .kind = "gpu_surface", .fill = true, .role = "Settings canvas", .accessibility_label = "AI Souls settings", .gpu_pixel_format = "bgra8_unorm", .gpu_present_mode = "timer", .gpu_alpha_mode = "opaque", .gpu_color_space = "srgb", .gpu_vsync = true },
                 },

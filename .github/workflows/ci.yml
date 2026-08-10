@@ -88,7 +88,7 @@ jobs:
 
       - run: native check
       - run: native test --yes
-      - run: native build --yes -Dtarget=${{ matrix.target }}
+      - run: native build --yes -Dtrace=off -Dtarget=${{ matrix.target }}
 
       # Free, since it was built anyway, and it means the macOS binary
       # nobody here can compile is always one download away.

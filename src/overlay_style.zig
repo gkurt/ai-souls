@@ -85,7 +85,7 @@ pub fn adopt(title: [:0]const u16) void {
     }
 }
 
-/// Put the settings window away as soon as it exists — `ai-souls serve`,
+/// Put the settings window away as soon as it exists — a screen process,
 /// which the CLI uses to start an app for someone who asked only for a
 /// banner.
 ///

@@ -54,8 +54,11 @@ machine, and they keep appearing after npm collects the npx cache —
 so nothing depends on the download surviving. See
 [Why hooks run a copy](#why-hooks-run-a-copy).
 
-Settings live in the tray icon, under **Open AI Souls**. The app appears
-there the first time a screen fires.
+To change what the screens say:
+
+```bash
+npx ai-souls settings
+```
 
 ### If you want the command as well
 
@@ -84,7 +87,6 @@ ai-souls uninstall [agent] remove every AI Souls hook
 ai-souls status            show paths and the current per-event settings
 ai-souls events            list the event keys
 ai-souls fire <event>      show a catalog event's screen (this is what hooks run)
-ai-souls serve             run in the tray with no window
 ```
 
 `agent` is optional and defaults to `claude`, the only one supported
@@ -117,37 +119,39 @@ ai-souls -- status
 | `--duration <ms>` | 600 to 10000 |
 | `--subtitle <text>` | |
 
-A message starts the app if nothing is running, and starts it in the
-tray — asking for a banner should not open a settings window over the
-top of it. The settings window closes to the tray rather than quitting,
-because the app has to stay alive to answer hooks. Quit from the tray
-menu.
-
 ## How it works
 
-One binary wearing several hats, and one small file between them:
+**A screen is a process.** Nothing stays resident: no daemon, no tray
+icon, no trigger file, no heartbeat. Between banners, AI Souls is not
+running.
 
 | Invocation | What it does |
 | --- | --- |
-| `ai-souls` | the app: settings window + the overlay |
-| `ai-souls serve` | the same app, straight to the tray |
-| `ai-souls fire <event>` | stamps `~/.ai-souls/trigger`; this is what hooks run |
-| `ai-souls "..."` | stamps the same file with a whole screen |
+| `ai-souls fire <event>` | resolves the event, draws its banner, exits — this is what hooks run |
+| `ai-souls "..."` | the same, for a headline you typed |
+| `ai-souls settings` | opens the settings window; closing it ends the process |
 | `ai-souls install` | merges the enabled hooks into `~/.claude/settings.json` |
 
-The running app polls the trigger five times a second. A hook writes one
-short line and exits, so nothing in Claude Code's critical path ever
-waits on a window system — and if the app is not running, a hook's fire
-is a no-op the next launch discards rather than replaying. A hook must
-never start an app; a person typing a message expects one to be there,
-so those two cases are deliberately different.
+A hook's `fire` reads the config, and if that event is switched off it
+exits before touching a window system at all. If it is on, the process
+becomes the banner, holds it for its duration, and quits with it.
+Measured on Windows from a completely dead start, four runs: **visible
+at 269–458 ms, median 295 ms.**
 
-Which is why the app publishes `~/.ai-souls/alive`: a heartbeat, and the
-newest trigger stamp it has acted on. `ai-souls "..."` waits to see its
-own stamp come back before concluding nothing is listening. That is an
-acknowledgement rather than a guess, which matters because the app can
-be alive and unable to answer — starting a sound freezes the Win32
-message loop for two seconds flat.
+This replaced a resident app that held an always-open transparent window
+and polled a trigger file five times a second. That design was built on
+the belief that revealing a canvas window costs ~2.5 s, so it had to be
+paid once at startup. It does not: the host reveals a canvas window on
+its first present, and the deferred-show deadline behind that number is
+a 1 s safety net for windows that never present. Measured with the
+window created on demand, five runs: **visible at 191–318 ms, median
+275 ms** — the deadline is never reached.
+
+The resident process cost **~3.5% of a core, continuously, forever**,
+almost all of it the poll loop rather than the window. It also meant
+that after a reboot nothing was listening and hooks fired into a void
+until you happened to start the app by hand. Both problems are gone
+because the thing that had them is gone.
 
 ## Why hooks run a copy
 
@@ -353,8 +357,6 @@ those numbers are what `config.txt` stores.
 | Path | |
 | --- | --- |
 | `~/.ai-souls/config.txt` | per-event settings |
-| `~/.ai-souls/trigger` | the one file hooks and messages write |
-| `~/.ai-souls/alive` | heartbeat, and the newest trigger acted on |
 | `~/.ai-souls/bin/` | the copy installed hooks run, and its sounds |
 | `~/.claude/settings.json` | where the hooks are installed |
 | `~/.claude-souls/config.txt` | a pre-rename install, read once and left alone |
@@ -392,12 +394,16 @@ but nobody has watched a banner appear there.
 
 A few things worth knowing:
 
-- **The overlay window is held open permanently**, transparent and
-  empty, rather than created per screen. Native SDK reveals canvas
-  windows on their first present, and on the Win32 host that reveal
-  lands about 2.5 seconds late — longer than a screen's whole life.
-  Paying it once at startup makes every screen instant. The cost is one
-  always-present click-through window.
+- **A canvas window reveals on its first present, not on a timer.** This
+  was long believed to cost ~2.5 s on the Win32 host, and the permanent
+  overlay window — and the resident process that held it — existed to
+  pay it once. The number was wrong. The host shows a canvas window from
+  `showWindowImplicit` on its first successful present; the deferred-show
+  deadline is a safety net for windows that never present, and it is
+  `kDeferredShowDeadlineMs = 1000`, never reached in practice. Measured
+  on SDK 0.8.1, five runs, window created on demand: visible at 191–318
+  ms, median 275 ms. Worth re-measuring on macOS, which has its own show
+  policy.
 - **The overlay window is only as tall as the banner**, not as tall as
   the screen, and this is the entire framerate budget. A transparent
   top-level window cannot use the Direct2D path — `UpdateLayeredWindow`
@@ -446,14 +452,18 @@ A few things worth knowing:
   the `chrome` builder that does have one is main-canvas only. Built out
   of `.panel` each strip draws that widget's border, and 48 hairlines
   through the fade turn the gradient into a flat lighter block.
-- **`ai-souls serve` hides the settings window with a raw `SW_HIDE`,**
-  not with the SDK's `closeWindow`. The Win32 host's
-  `close_policy = "hide"` is a `WM_CLOSE` hook, and it documents that
-  runtime-initiated closes bypass it and really destroy the window —
-  measured as `window_closed` followed immediately by `stop`. Hiding
-  behind the host's back leaves it believing the window is on the glass,
-  which costs nothing here because the permanent overlay window already
-  keeps the app off the occluded path.
+- **A screen process hides the settings window with a raw `SW_HIDE`,**
+  not with the SDK's `closeWindow`. The shell window is declared in
+  `app.zon` and therefore always created, but a banner must not open a
+  settings window over itself. `closeWindow` is not the answer: the
+  Win32 host documents that runtime-initiated closes bypass the
+  `close_policy` hook and really destroy the window — measured as
+  `window_closed` followed immediately by `stop`, which would end the
+  process mid-banner.
+- **Release builds pass `-Dtrace=off`.** The SDK's trace default is
+  `events`, and now that `fire` boots the runtime in the foreground that
+  chatter goes straight to the hook's stdout. With it off, a fire prints
+  nothing at all.
 - **`AI_SOULS_OPAQUE=1`** runs the overlay as a solid window: the
   band stops being see-through, and in exchange it regains the Direct2D
   path and runs noticeably smoother. It is also the fallback for
