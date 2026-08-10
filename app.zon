@@ -5,7 +5,7 @@
     .name = "ai-souls",
     .display_name = "AI Souls",
     .description = "Dark Souls screens for your coding agent.",
-    .version = "0.1.0",
+    .version = "0.2.0",
     .icons = .{"assets/icon.png"},
     .platforms = .{ "macos", "windows", "linux" },
     .permissions = .{ "view", "command" },
