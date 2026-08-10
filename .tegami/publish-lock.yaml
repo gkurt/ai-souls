@@ -1,20 +1,16 @@
 core:changelogs:
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## Every download can be traced back to the build that made it\n\nThe binaries and the npm tarball are now signed by the workflow that\nbuilt them, so you can check that what you downloaded came from this\nrepository and not from someone who would like you to think so:\n\n```bash\ngh attestation verify ai-souls-v0.2.1-win32-x64.exe --repo gkurt/ai-souls\n```\n\nThe npm package carries its own provenance too, published over OIDC with\nno token anywhere in the pipeline.\n"
-    filename: provenance.md
+  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## Banners never take the keyboard\n\nA screen used to arrive as an app: it took focus from whatever you were\ntyping into, put a tile in the Dock, and turned up in Cmd-Tab. Now a\nbanner is only a banner. Your caret stays where you left it.\n\nOne trade comes with it: the settings window opens without focus, so\nclick it once before you type.\n"
+    filename: macos-banner-focus.md
     v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## The release that actually reaches npm\n\n0.2.0 was tagged and built — both binaries, both slots — and then fell\nover on the last step. `npm publish tarball/*.tgz` reads a bare\n`dir/file.tgz` as a GitHub `owner/repo` shorthand, so npm went looking\nfor a git repository named after the tarball instead of publishing it.\n\nNothing was wrong with 0.2.0 itself; it just never left the building.\nEverything in its notes below ships here.\n"
-    filename: publish-a-path.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## Every screen is the You Died screen\n\nBonfire, victory, soul, hollow and covenant were guesses at what those\nbanners should look like. YOU DIED in red serif is the one screen the\ngame is actually known for, so that is what every event ships as now —\na PR landing included. All six styles are still there to pick per event;\nnone of the other five becomes a default until it has been checked\nagainst the real thing.\n\nScreens are seven seconds by default as a result, which is how long the\nYou Died sting runs. Drag the duration down per event if that is more\nbanner than you wanted.\n\n## The louder screen wins\n\nTwo events often land seconds apart — a commit and the PR it leads to, a\ntool failing and the turn ending on it — and until now whichever got\nthere first took the screen and the other was simply dropped.\n\nEvents are ranked instead. A PR landing while the commit's banner is\nstill up replaces it. A turn ending never interrupts anything. Equal\nranks leave each other alone, so a second permission prompt does not cut\noff the first one's screen. `ai-souls status` prints the ranks.\n\nA screen you ask for by hand outranks the whole catalog, as before.\n"
-    filename: ranked-death-screens.md
+  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## `install` works on macOS\n\nIt used to stop with \"No HOME/USERPROFILE in the environment.\" and write\nnothing, whatever your environment actually said. Your home directory was\nnever the problem: the app could not read its own path, and said so in the\none message it had. Both are fixed — the path resolves, and the two\nfailures now read differently if either ever happens again.\n\n`install` also finishes by saying the hooks are ready.\n"
+    filename: macos-install-home.md
     v: 0.0.0
 core:packages:
   - id: npm:@ai-souls/root
     updated: false
   - changelogIds:
-      - provenance.md
-      - publish-a-path.md
-      - ranked-death-screens.md
+      - macos-banner-focus.md
+      - macos-install-home.md
     id: npm:ai-souls
     updated: true
 npm:packages:
