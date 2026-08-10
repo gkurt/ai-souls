@@ -19,6 +19,7 @@
 const std = @import("std");
 const souls = @import("souls.zig");
 const config_mod = @import("config.zig");
+const console = @import("console.zig");
 const hooks = @import("hooks.zig");
 const paths_mod = @import("paths.zig");
 const runtime_copy = @import("runtime_copy.zig");
@@ -27,6 +28,19 @@ const throttle = @import("throttle.zig");
 /// The command a person types. Kept in one place because it appears in
 /// every usage string and every error message.
 pub const command_name = "ai-souls";
+
+/// How the reader of a message has to type the command, which is not
+/// always what it is called. Someone who ran `npx ai-souls install` has
+/// nothing on PATH afterwards — see `Paths.viaNpx` — so telling them to
+/// run `ai-souls settings` names a command their shell cannot find.
+///
+/// Only for "type this next" instructions. A message that says which
+/// program is complaining uses `command_name`: the prefix on an error is
+/// the program's name, not a command to run.
+fn invocation(paths: *const paths_mod.Paths) []const u8 {
+    if (paths.viaNpx()) return "npx " ++ command_name;
+    return command_name;
+}
 
 /// Coding agents AI Souls knows how to install hooks for. Claude Code is
 /// the only one wired up; the argument exists so that adding a second
@@ -105,11 +119,14 @@ fn eq(a: []const u8, b: []const u8) bool {
 /// each line back at byte zero — invisible on a console, and on
 /// `ai-souls status > file` it silently overwrites everything already
 /// written with the last line.
+///
+/// Not `File.stdout()` directly: on Windows this binary is
+/// GUI-subsystem and has to go and find the terminal. See `console.zig`.
 var out_buffer: [4096]u8 = undefined;
 var out_writer: ?std.Io.File.Writer = null;
 
 fn say(io: std.Io, comptime format: []const u8, args: anytype) void {
-    if (out_writer == null) out_writer = std.Io.File.stdout().writer(io, &out_buffer);
+    if (out_writer == null) out_writer = console.out().writer(io, &out_buffer);
     const out = &out_writer.?.interface;
     out.print(format, args) catch return;
     // Flushed per call rather than at exit: a verb can end in
@@ -408,11 +425,12 @@ fn installHooks(
             \\open, almost certainly a running AI Souls. Quit it from the
             \\tray and run `{s} install` again to catch it up.
             \\
-        , .{ paths.runtime_exe.slice(), command_name }),
+        , .{ paths.runtime_exe.slice(), invocation(paths) }),
         .current, .self => {},
     }
-    // Where to go next. Worth saying because the recommended way in is
-    // `npx ai-souls install`, which leaves nothing on PATH.
+    // Where to go next, spelled the way THIS reader has to type it —
+    // the recommended way in is `npx ai-souls install`, which leaves
+    // nothing on PATH to name.
     if (installing) say(io,
         \\
         \\Hooks ready — screens now fire in every Claude Code session.
@@ -421,7 +439,7 @@ fn installHooks(
         \\
         \\  {s} settings
         \\
-    , .{command_name});
+    , .{invocation(paths)});
     // Nothing left to answer the hooks, so the copy has no reason to
     // stay. After the settings write, so a failure there leaves a
     // working install rather than a half-dismantled one.
@@ -458,7 +476,7 @@ fn status(io: std.Io, paths: *const paths_mod.Paths) Outcome {
     if (std.Io.Dir.cwd().access(io, paths.runtime_exe.slice(), .{})) |_| {
         say(io, "hooks run       {s}\n", .{paths.runtime_exe.slice()});
     } else |_| {
-        say(io, "hooks run       no copy yet — run `{s} install`\n", .{command_name});
+        say(io, "hooks run       no copy yet — run `{s} install`\n", .{invocation(paths)});
     }
     say(io, "config          {s}\n", .{paths.config.slice()});
     say(io, "claude settings {s}\n", .{paths.claude_settings.slice()});

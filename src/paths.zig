@@ -130,6 +130,22 @@ pub const Paths = struct {
         return self.exe.slice();
     }
 
+    /// Are we running out of npm's npx cache?
+    ///
+    /// It matters for what a person is told to type next. `npx ai-souls
+    /// install` leaves nothing on PATH — the package was unpacked into
+    /// `_npx/<hash>` and npm deletes that on its own schedule — so
+    /// telling that reader to run `ai-souls settings` names a command
+    /// their shell does not have. A global install does have it.
+    ///
+    /// Read off our own path rather than npm's environment variables:
+    /// `npm_config_user_agent` and friends say a package manager ran us,
+    /// not that the binary is somewhere temporary, and it is the second
+    /// thing that decides the answer.
+    pub fn viaNpx(self: *const Paths) bool {
+        return pathHasSegment(self.exe.slice(), "_npx");
+    }
+
     /// Adopt a pre-rename `~/.claude-souls/config.txt` if this install
     /// has none of its own.
     ///
@@ -195,6 +211,21 @@ fn copy(buffer: []u8, at: usize, source: []const u8) usize {
     const n = @min(source.len, buffer.len - at);
     @memcpy(buffer[at .. at + n], source[0..n]);
     return n;
+}
+
+/// Is `name` one whole component of `path`? Both separators count, so a
+/// Windows path answers the same as a POSIX one — and `_npxcache` is not
+/// `_npx`.
+fn pathHasSegment(path: []const u8, name: []const u8) bool {
+    var rest = path;
+    while (rest.len > 0) {
+        const cut = std.mem.indexOfAny(u8, rest, "/\\") orelse {
+            return std.mem.eql(u8, rest, name);
+        };
+        if (std.mem.eql(u8, rest[0..cut], name)) return true;
+        rest = rest[cut + 1 ..];
+    }
+    return false;
 }
 
 /// The directory part of a path, or "" when there is none.
@@ -297,6 +328,35 @@ test "with no assets root the relative path survives untouched" {
         "assets/sounds/gong.mp3",
         paths.asset(&buffer, "assets/sounds/gong.mp3"),
     );
+}
+
+test "an npx cache is recognised, and nothing else is" {
+    var npx: Paths = .{};
+    npx.exe.set("/Users/ashen/.npm/_npx/ab12cd34/node_modules/ai-souls/vendor/darwin-universal/ai-souls");
+    try std.testing.expect(npx.viaNpx());
+
+    var npx_windows: Paths = .{};
+    npx_windows.exe.set("C:\\Users\\ashen\\AppData\\Local\\npm-cache\\_npx\\ab12\\node_modules\\ai-souls\\vendor\\win32-x64\\ai-souls.exe");
+    try std.testing.expect(npx_windows.viaNpx());
+
+    // A global install is on PATH and must be told to say so.
+    var global: Paths = .{};
+    global.exe.set("/usr/local/lib/node_modules/ai-souls/vendor/darwin-universal/ai-souls");
+    try std.testing.expect(!global.viaNpx());
+
+    // The copy the hooks run is ours, and never npx's.
+    var runtime: Paths = .{};
+    runtime.exe.set("/Users/ashen/.ai-souls/bin/ai-souls");
+    try std.testing.expect(!runtime.viaNpx());
+
+    // Whole components only.
+    var lookalike: Paths = .{};
+    lookalike.exe.set("/home/ashen/_npxcache/ai-souls");
+    try std.testing.expect(!lookalike.viaNpx());
+
+    // And nothing to read is not a yes.
+    const nowhere: Paths = .{};
+    try std.testing.expect(!nowhere.viaNpx());
 }
 
 test "parent trims the last segment" {

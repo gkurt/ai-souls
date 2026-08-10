@@ -423,6 +423,24 @@ Everything below was measured on Windows 11.
   Objective-C, and the only place it borrows the main thread from
   AppKit. `Accessory`, not `Prohibited`: the latter documents itself as
   unable to create windows at all, and the banner is a window.
+- **Windows prints nothing unless it goes looking for the terminal**
+  (`src/console.zig`). The release binary is GUI-subsystem — a
+  console-subsystem one flashes a terminal window behind every banner —
+  and Windows does not attach a GUI process to the console that launched
+  it, so `GetStdHandle` answers with nothing usable and every line the
+  CLI writes is discarded. Measured as an empty console screen buffer
+  from a `cmd /k ai-souls install` that wrote `settings.json` perfectly
+  well. So a redirected handle is kept as-is (a pipe is a parent reading
+  us, a file is `>`), and anything else attaches to the parent's console
+  and writes to `CONOUT$` — with the console's code page set to UTF-8 for
+  the duration, because the default 437/850 turns every em dash in these
+  messages into nonsense, and put back as the verbs return.
+- **A message that says "type this next" spells the command with
+  `invocation`,** not `command_name`. `npx ai-souls install` leaves
+  nothing on PATH — the package is unpacked into `_npx/<hash>` and npm
+  collects it later — so that reader needs `npx ai-souls settings`. It is
+  read off our own path, not npm's environment variables: those say a
+  package manager ran us, not that the binary is somewhere temporary.
 - **`native automate snapshot` is not trustworthy here.** It served a
   cached snapshot from a long-dead process throughout development —
   check `publisher_pid` against a live process before believing it.

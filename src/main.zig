@@ -24,6 +24,7 @@ const platform = native_sdk.platform;
 const app = @import("app.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
+const console = @import("console.zig");
 const overlay_style = @import("overlay_style.zig");
 const paths_mod = @import("paths.zig");
 const screen = @import("screen.zig");
@@ -251,6 +252,9 @@ pub fn main(init: std.process.Init) !void {
     // for a window system it will never use.
     const args = init.minimal.args.toSlice(arena) catch &[_][]const u8{};
     const mode = cli.run(init.gpa, io, args, &paths);
+    // Every verb has said everything it is going to say by now, so the
+    // console we may have borrowed to say it in goes back as we found it.
+    console.restore();
     const screen_only: ?config_mod.EventSettings = switch (mode) {
         .handled_ok => return,
         // Exit rather than returning an error: the verb already printed
@@ -375,6 +379,7 @@ test {
     _ = @import("app.zig");
     _ = @import("cli.zig");
     _ = @import("config.zig");
+    _ = @import("console.zig");
     _ = @import("overlay_style.zig");
     _ = @import("hooks.zig");
     _ = @import("paths.zig");

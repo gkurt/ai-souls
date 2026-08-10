@@ -39,6 +39,7 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/config.zig` | allocation-free config codec for `config.txt` |
 | `src/throttle.zig` | the on-disk record of when each event last drew, and the rules over it — the floor, the ranking, the per-event window |
 | `src/cli.zig` | every non-GUI verb (`install`, `fire`, `status`, …) and the trigger handshake |
+| `src/console.zig` | where CLI output goes on Windows, where a GUI-subsystem binary has no terminal to print to |
 | `src/hooks.zig` | the JSON merge into `~/.claude/settings.json` |
 | `src/paths.zig` | every path the app knows, resolved once |
 | `src/runtime_copy.zig` | the copy under `~/.ai-souls/bin` that installed hooks actually run |
@@ -89,6 +90,13 @@ Invariants worth knowing before you change things:
   with. A screen process additionally drops to
   `NSApplicationActivationPolicyAccessory` so it has no Dock tile and no
   Cmd-Tab entry — screen processes only, or the settings app loses both.
+- **A verb's output on Windows has to go and find the terminal.** The
+  release binary is GUI-subsystem, so Windows never attaches it to the
+  console that launched it and every `say` lands nowhere — measured as a
+  completely empty console buffer while `install` wrote the settings
+  file. `console.out` keeps a redirected handle (a pipe is a parent
+  reading us, and `status > file` must work) and otherwise attaches to
+  the parent's console. Print through `say`, never `File.stdout()`.
 - **The throttle is a file, and it is decided before the window opens.**
   `fire` reads `~/.ai-souls/fired.txt`, and a screen it decides against
   costs one read and exits `handled_ok` — a hook that reported failure
