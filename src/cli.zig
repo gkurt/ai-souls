@@ -17,6 +17,7 @@
 //! `--` forces the rest of the line to be read as a message.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const souls = @import("souls.zig");
 const config_mod = @import("config.zig");
 const console = @import("console.zig");
@@ -88,6 +89,8 @@ pub fn run(
     if (eq(verb, "fire")) return fire(io, paths, rest);
     if (eq(verb, "status")) return status(io, paths);
     if (eq(verb, "events")) return listEvents(io);
+    if (eq(verb, "set")) return setVerb(io, paths, rest);
+    if (eq(verb, "reset")) return resetVerb(io, paths, rest);
     if (eq(verb, "help") or eq(verb, "--help") or eq(verb, "-h")) {
         printUsage(io);
         return .handled_ok;
@@ -126,6 +129,10 @@ var out_buffer: [4096]u8 = undefined;
 var out_writer: ?std.Io.File.Writer = null;
 
 fn say(io: std.Io, comptime format: []const u8, args: anytype) void {
+    // Under `zig build test` this process's stdout is the build runner's
+    // own protocol stream, and a verb that printed down it would wedge
+    // the run. Tests assert on outcomes and files, never on output.
+    if (builtin.is_test) return;
     if (out_writer == null) out_writer = console.out().writer(io, &out_buffer);
     const out = &out_writer.?.interface;
     out.print(format, args) catch return;
@@ -223,7 +230,10 @@ fn message(io: std.Io, paths: *const paths_mod.Paths, args: []const []const u8) 
                 return .handled_failed;
             }
             const value = args[index];
-            if (!applyOption(io, &entry, name, value)) return .handled_failed;
+            applyOption(&entry, name, value) catch |err| {
+                explainOption(io, err, name, value);
+                return .handled_failed;
+            };
             if (eq(name, "sound")) sound_chosen = true;
             if (eq(name, "duration")) duration_chosen = true;
             continue;
@@ -265,62 +275,77 @@ fn message(io: std.Io, paths: *const paths_mod.Paths, args: []const []const u8) 
     return armScreen(io, paths, &stamps, null, entry);
 }
 
-/// One `--name value` pair. Returns false having already explained
-/// itself.
+const OptionError = error{
+    UnknownOption,
+    UnknownStyle,
+    UnknownSound,
+    BadVolume,
+    BadDuration,
+};
+
+/// One `--name value` pair onto a screen's settings. Pure so the tests
+/// can drive it; `explainOption` does the talking. Shared by `message`
+/// and `set`, so the two can never disagree about what a value means.
 fn applyOption(
-    io: std.Io,
     entry: *config_mod.EventSettings,
     name: []const u8,
     value: []const u8,
-) bool {
+) OptionError!void {
     if (eq(name, "style")) {
-        entry.style = souls.Style.fromName(value) orelse {
-            say(io, "{s}: no style called \"{s}\". Try: ", .{ command_name, value });
-            listNames(io, souls.Style);
-            return false;
-        };
-        return true;
+        entry.style = souls.Style.fromName(value) orelse return error.UnknownStyle;
+        return;
     }
     if (eq(name, "sound")) {
-        entry.sound = souls.Sound.fromName(value) orelse {
-            say(io, "{s}: no sound called \"{s}\". Try: ", .{ command_name, value });
-            listNames(io, souls.Sound);
-            return false;
-        };
-        return true;
+        entry.sound = souls.Sound.fromName(value) orelse return error.UnknownSound;
+        return;
     }
     if (eq(name, "volume")) {
         const parsed = std.fmt.parseInt(u8, value, 10) catch 255;
-        if (parsed > 100) {
-            say(io, "{s}: --volume takes 0 to 100, not \"{s}\"\n", .{ command_name, value });
-            return false;
-        }
+        if (parsed > 100) return error.BadVolume;
         entry.volume = parsed;
-        return true;
+        return;
     }
     if (eq(name, "duration")) {
-        const parsed = std.fmt.parseInt(u32, value, 10) catch {
-            say(io, "{s}: --duration takes milliseconds, not \"{s}\"\n", .{ command_name, value });
-            return false;
-        };
+        const parsed = std.fmt.parseInt(u32, value, 10) catch return error.BadDuration;
         if (parsed < config_mod.min_duration_ms or parsed > config_mod.max_duration_ms) {
-            say(io, "{s}: --duration takes {d} to {d} milliseconds\n", .{
-                command_name,
-                config_mod.min_duration_ms,
-                config_mod.max_duration_ms,
-            });
-            return false;
+            return error.BadDuration;
         }
         entry.duration_ms = parsed;
-        return true;
+        return;
     }
     if (eq(name, "subtitle")) {
         entry.subtitle.set(value);
-        return true;
+        return;
     }
-    say(io, "{s}: unknown option \"--{s}\"\n\n", .{ command_name, name });
-    printUsage(io);
-    return false;
+    return error.UnknownOption;
+}
+
+fn explainOption(io: std.Io, err: OptionError, name: []const u8, value: []const u8) void {
+    switch (err) {
+        error.UnknownStyle => {
+            say(io, "{s}: no style called \"{s}\". Try: ", .{ command_name, value });
+            listNames(io, souls.Style);
+        },
+        error.UnknownSound => {
+            say(io, "{s}: no sound called \"{s}\". Try: ", .{ command_name, value });
+            listNames(io, souls.Sound);
+        },
+        error.BadVolume => say(
+            io,
+            "{s}: --volume takes 0 to 100, not \"{s}\"\n",
+            .{ command_name, value },
+        ),
+        error.BadDuration => say(io, "{s}: --duration takes {d} to {d} milliseconds, not \"{s}\"\n", .{
+            command_name,
+            config_mod.min_duration_ms,
+            config_mod.max_duration_ms,
+            value,
+        }),
+        error.UnknownOption => {
+            say(io, "{s}: unknown option \"--{s}\"\n\n", .{ command_name, name });
+            printUsage(io);
+        },
+    }
 }
 
 fn listNames(io: std.Io, comptime E: type) void {
@@ -488,38 +513,194 @@ fn status(io: std.Io, paths: *const paths_mod.Paths) Outcome {
         var buffer: [paths_mod.max_path_bytes]u8 = undefined;
         say(io, "sounds          {s}\n\n", .{paths.asset(&buffer, souls.Sound.gong.path())});
     }
-    for (souls.events, 0..) |event, index| {
-        const entry = &config.events[index];
-        // What it subscribes to, what narrows it, and what holds it
-        // back: between them they answer "why did I not see that
-        // screen", which is what anyone runs this for.
-        var hook: [160]u8 = undefined;
-        var hook_writer = std.Io.Writer.fixed(&hook);
-        hook_writer.print("{s}", .{event.hook_event}) catch {};
-        if (event.matcher.len > 0) {
-            const shown = if (event.matcher_label.len > 0) event.matcher_label else event.matcher;
-            hook_writer.print(" {s}", .{shown}) catch {};
-        }
-        if (event.condition.len > 0) hook_writer.print(" if {s}", .{event.condition}) catch {};
-        if (event.throttle_ms > 0) {
-            hook_writer.print(" · max 1/{d}s", .{event.throttle_ms / 1000}) catch {};
-        }
-        // Meaningful only against the other rows, which is why it is a
-        // bare number and why every row carries one.
-        hook_writer.print(" · rank {d}", .{event.priority}) catch {};
-        say(io, "{s:<3} {s:<18} {s:<24} {s}\n", .{
-            if (entry.enabled) "on" else "off",
-            event.key,
-            entry.title.slice(),
-            hook_writer.buffered(),
-        });
-    }
+    for (0..souls.event_count) |index| sayEventRow(io, &config, index);
     return .handled_ok;
+}
+
+/// One event the way `status` lists them — also what `set` and `reset`
+/// print back, so a change is confirmed in the same shape it will be
+/// read in later.
+fn sayEventRow(io: std.Io, config: *const config_mod.Config, index: usize) void {
+    const event = &souls.events[index];
+    const entry = &config.events[index];
+    // What it subscribes to, what narrows it, and what holds it
+    // back: between them they answer "why did I not see that
+    // screen", which is what anyone runs this for.
+    var hook: [160]u8 = undefined;
+    var hook_writer = std.Io.Writer.fixed(&hook);
+    hook_writer.print("{s}", .{event.hook_event}) catch {};
+    if (event.matcher.len > 0) {
+        const shown = if (event.matcher_label.len > 0) event.matcher_label else event.matcher;
+        hook_writer.print(" {s}", .{shown}) catch {};
+    }
+    if (event.condition.len > 0) hook_writer.print(" if {s}", .{event.condition}) catch {};
+    if (event.throttle_ms > 0) {
+        hook_writer.print(" · max 1/{d}s", .{event.throttle_ms / 1000}) catch {};
+    }
+    // Meaningful only against the other rows, which is why it is a
+    // bare number and why every row carries one.
+    hook_writer.print(" · rank {d}", .{event.priority}) catch {};
+    say(io, "{s:<3} {s:<18} {s:<24} {s}\n", .{
+        if (entry.enabled) "on" else "off",
+        event.key,
+        entry.title.slice(),
+        hook_writer.buffered(),
+    });
 }
 
 fn listEvents(io: std.Io) Outcome {
     for (souls.events) |event| say(io, "{s}\n", .{event.key});
     return .handled_ok;
+}
+
+/// `set <event> [on|off] [--option value ...]` — change one row of the
+/// config from the command line.
+///
+/// `on` and `off` are bare words rather than flags because they are the
+/// whole reason most people run this. Everything else reuses the
+/// message options, plus `--title`, which a message spells as its own
+/// words. With nothing after the key it just prints the row, which is
+/// `status` for one event.
+fn setVerb(io: std.Io, paths: *const paths_mod.Paths, rest: []const []const u8) Outcome {
+    if (rest.len < 1) {
+        say(io, "{s} set: expected an event key — `{s} events` lists them\n", .{
+            command_name,
+            invocation(paths),
+        });
+        return .handled_failed;
+    }
+    const index = souls.indexOfKey(rest[0]) orelse {
+        say(io, "{s} set: unknown event \"{s}\" — `{s} events` lists them\n", .{
+            command_name,
+            rest[0],
+            invocation(paths),
+        });
+        return .handled_failed;
+    };
+
+    var config = readConfig(io, paths);
+    const entry = &config.events[index];
+    const was_enabled = entry.enabled;
+
+    var at: usize = 1;
+    while (at < rest.len) : (at += 1) {
+        const arg = rest[at];
+        if (eq(arg, "on")) {
+            entry.enabled = true;
+            continue;
+        }
+        if (eq(arg, "off")) {
+            entry.enabled = false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--")) {
+            const name = arg[2..];
+            at += 1;
+            if (at >= rest.len) {
+                say(io, "{s}: \"--{s}\" needs a value\n", .{ command_name, name });
+                return .handled_failed;
+            }
+            const value = rest[at];
+            if (eq(name, "title")) {
+                entry.title.set(value);
+                continue;
+            }
+            applyOption(entry, name, value) catch |err| {
+                explainOption(io, err, name, value);
+                return .handled_failed;
+            };
+            continue;
+        }
+        say(io, "{s} set: \"{s}\" is not a setting — on, off, or --option value\n", .{
+            command_name,
+            arg,
+        });
+        return .handled_failed;
+    }
+
+    if (!writeConfig(io, paths, &config)) {
+        say(io, "{s}: could not write {s}\n", .{ command_name, paths.config.slice() });
+        return .handled_failed;
+    }
+    sayEventRow(io, &config, index);
+    // The same honesty the duration slider's label had: a sound longer
+    // than its screen gets cut off, and nothing else will say so.
+    if (entry.sound.durationMs() > entry.duration_ms) {
+        say(io, "note: {s} runs {d}ms and gets cut off — set --duration {d} to fit it\n", .{
+            entry.sound.label(),
+            entry.sound.durationMs(),
+            entry.sound.durationMs(),
+        });
+    }
+    if (entry.enabled != was_enabled) sayInstallReminder(io, paths);
+    return .handled_ok;
+}
+
+/// `reset <event|all>` — back to the catalog defaults.
+fn resetVerb(io: std.Io, paths: *const paths_mod.Paths, rest: []const []const u8) Outcome {
+    if (rest.len < 1) {
+        say(io, "{s} reset: expected an event key or \"all\"\n", .{command_name});
+        return .handled_failed;
+    }
+
+    var config = readConfig(io, paths);
+    if (eq(rest[0], "all")) {
+        const was = config;
+        config = config_mod.Config.default();
+        if (!writeConfig(io, paths, &config)) {
+            say(io, "{s}: could not write {s}\n", .{ command_name, paths.config.slice() });
+            return .handled_failed;
+        }
+        for (0..souls.event_count) |index| sayEventRow(io, &config, index);
+        for (was.events, config.events) |before, after| {
+            if (before.enabled != after.enabled) {
+                sayInstallReminder(io, paths);
+                break;
+            }
+        }
+        return .handled_ok;
+    }
+
+    const index = souls.indexOfKey(rest[0]) orelse {
+        say(io, "{s} reset: unknown event \"{s}\" — `{s} events` lists them\n", .{
+            command_name,
+            rest[0],
+            invocation(paths),
+        });
+        return .handled_failed;
+    };
+    const was_enabled = config.events[index].enabled;
+    config.events[index] = config_mod.EventSettings.fromCatalog(souls.events[index]);
+    if (!writeConfig(io, paths, &config)) {
+        say(io, "{s}: could not write {s}\n", .{ command_name, paths.config.slice() });
+        return .handled_failed;
+    }
+    sayEventRow(io, &config, index);
+    if (config.events[index].enabled != was_enabled) sayInstallReminder(io, paths);
+    return .handled_ok;
+}
+
+/// Arming and disarming only takes effect once the hooks on disk catch
+/// up — `fire` double-checks `enabled`, so a stale hook set fails quiet
+/// rather than wrong, but a newly armed event has no hook to fire it.
+fn sayInstallReminder(io: std.Io, paths: *const paths_mod.Paths) void {
+    say(io, "\nWhich events are armed changed — run `{s} install` to update the hooks.\n", .{
+        invocation(paths),
+    });
+}
+
+/// Best-effort counterpart to `readConfig`. Returns false with nothing
+/// said — the caller knows what it was trying to do.
+fn writeConfig(io: std.Io, paths: *const paths_mod.Paths, config: *const config_mod.Config) bool {
+    if (paths.config.isEmpty()) return false;
+    var buffer: [config_mod.max_config_bytes]u8 = undefined;
+    const text = config.serialize(&buffer);
+    if (text.len == 0) return false;
+    const cwd = std.Io.Dir.cwd();
+    const parent = paths_mod.parent(paths.config.slice());
+    if (parent.len > 0) cwd.createDirPath(io, parent) catch {};
+    cwd.writeFile(io, .{ .sub_path = paths.config.slice(), .data = text }) catch return false;
+    return true;
 }
 
 fn printUsage(io: std.Io) void {
@@ -533,9 +714,11 @@ fn printUsage(io: std.Io) void {
         \\  ai-souls uninstall [agent] remove every AI Souls hook
         \\  ai-souls status            show paths and the current per-event settings
         \\  ai-souls events            list the event keys
+        \\  ai-souls set <event> ...   change an event: on, off, and the options below
+        \\  ai-souls reset <event|all> put an event, or everything, back to its defaults
         \\  ai-souls fire <event>      show a catalog event's screen (this is what hooks run)
         \\
-        \\Message options:
+        \\Message options — `set` takes them too, plus --title <text>:
         \\
         \\  --style <name>      death, bonfire, victory, soul, hollow, covenant
         \\  --sound <name>      silent, gong, choir, chime, ember, thud, you-died
@@ -576,4 +759,53 @@ pub fn readConfig(io: std.Io, paths: *const paths_mod.Paths) config_mod.Config {
 pub fn nowMs(io: std.Io) i64 {
     const ns = std.Io.Timestamp.now(io, .real).nanoseconds;
     return @intCast(@divTrunc(ns, std.time.ns_per_ms));
+}
+
+test "options apply, and every way to hold one wrong is named" {
+    var entry: config_mod.EventSettings = .{};
+
+    try applyOption(&entry, "style", "bonfire");
+    try std.testing.expectEqual(souls.Style.bonfire, entry.style);
+    try applyOption(&entry, "sound", "you-died");
+    try std.testing.expectEqual(souls.Sound.you_died, entry.sound);
+    try applyOption(&entry, "volume", "55");
+    try std.testing.expectEqual(@as(u8, 55), entry.volume);
+    try applyOption(&entry, "duration", "3000");
+    try std.testing.expectEqual(@as(u32, 3000), entry.duration_ms);
+    try applyOption(&entry, "subtitle", "rest here");
+    try std.testing.expectEqualStrings("rest here", entry.subtitle.slice());
+
+    try std.testing.expectError(error.UnknownStyle, applyOption(&entry, "style", "puce"));
+    try std.testing.expectError(error.UnknownSound, applyOption(&entry, "sound", "kazoo"));
+    try std.testing.expectError(error.BadVolume, applyOption(&entry, "volume", "101"));
+    try std.testing.expectError(error.BadVolume, applyOption(&entry, "volume", "loud"));
+    try std.testing.expectError(error.BadDuration, applyOption(&entry, "duration", "50"));
+    try std.testing.expectError(error.BadDuration, applyOption(&entry, "duration", "long"));
+    try std.testing.expectError(error.UnknownOption, applyOption(&entry, "letterbox", "on"));
+
+    // And nothing a failed option touched moved.
+    try std.testing.expectEqual(@as(u8, 55), entry.volume);
+    try std.testing.expectEqual(@as(u32, 3000), entry.duration_ms);
+}
+
+test "a config written by the CLI reads back through the same paths" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var paths: paths_mod.Paths = .{};
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const dir = std.fmt.bufPrint(&dir_buffer, ".zig-cache/tmp/{s}", .{tmp.sub_path}) catch
+        return error.PathTooLong;
+    // A directory that does not exist yet, so the write has to make it.
+    var nested_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    const nested = paths_mod.join(&nested_buffer, dir, "fresh");
+    paths.config.set(paths_mod.join(&file_buffer, nested, "config.txt"));
+
+    var config = config_mod.Config.default();
+    config.events[0].volume = 42;
+    try std.testing.expect(writeConfig(std.testing.io, &paths, &config));
+
+    const read_back = readConfig(std.testing.io, &paths);
+    try std.testing.expectEqual(@as(u8, 42), read_back.events[0].volume);
 }

@@ -71,9 +71,145 @@ test "fire resolves an armed event into the screen it will draw" {
     }
 }
 
-// No test drives a CLI path that PRINTS. `say` writes to this process's
-// real stdout, which under `zig build test` is the build runner's own
-// protocol stream — a usage message down that pipe wedges the run.
+// `say` is a no-op under `zig build test` — this process's stdout is
+// the build runner's own protocol stream — so these tests are free to
+// drive any verb and assert on outcomes and files, never on output.
+
+/// A tmp-dir config path, built the way every file-backed test here
+/// builds one.
+fn tmpConfigPath(
+    tmp: *const std.testing.TmpDir,
+    dir_buffer: *[paths_mod.max_path_bytes]u8,
+    file_buffer: *[paths_mod.max_path_bytes]u8,
+) ![]const u8 {
+    const dir = std.fmt.bufPrint(dir_buffer, ".zig-cache/tmp/{s}", .{tmp.sub_path}) catch
+        return error.PathTooLong;
+    return paths_mod.join(file_buffer, dir, "config.txt");
+}
+
+test "set disarms an event, on disk, where fire reads it" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var paths: paths_mod.Paths = .{};
+    paths.config.set(try tmpConfigPath(&tmp, &dir_buffer, &file_buffer));
+
+    // `turn_complete` ships armed; switch it off.
+    const set = &.{ "ai-souls", "set", "turn_complete", "off" };
+    try testing.expect(cli.run(testing.allocator, testing.io, set, &paths) == .handled_ok);
+
+    const config = cli.readConfig(testing.io, &paths);
+    const index = souls.indexOfKey("turn_complete").?;
+    try testing.expect(!config.events[index].enabled);
+
+    // The change reaches the hook: its `fire` now has nothing to draw,
+    // and says so with the quiet success a suppressed screen gets.
+    const hook = &.{ "ai-souls", "fire", "turn_complete" };
+    try testing.expect(cli.run(testing.allocator, testing.io, hook, &paths) == .handled_ok);
+}
+
+test "set changes a screen the way the flags say" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var paths: paths_mod.Paths = .{};
+    paths.config.set(try tmpConfigPath(&tmp, &dir_buffer, &file_buffer));
+
+    const set = &.{
+        "ai-souls",          "set",     "tool_failed",
+        "on",                "--style", "bonfire",
+        "--sound",           "gong",    "--volume",
+        "55",                "--duration", "3000",
+        "--title",           "BONFIRE LIT", "--subtitle",
+        "rest here",
+    };
+    try testing.expect(cli.run(testing.allocator, testing.io, set, &paths) == .handled_ok);
+
+    const config = cli.readConfig(testing.io, &paths);
+    const entry = &config.events[souls.indexOfKey("tool_failed").?];
+    try testing.expect(entry.enabled);
+    try testing.expectEqual(souls.Style.bonfire, entry.style);
+    try testing.expectEqual(souls.Sound.gong, entry.sound);
+    try testing.expectEqual(@as(u8, 55), entry.volume);
+    try testing.expectEqual(@as(u32, 3000), entry.duration_ms);
+    try testing.expectEqualStrings("BONFIRE LIT", entry.title.slice());
+    try testing.expectEqualStrings("rest here", entry.subtitle.slice());
+}
+
+test "set refuses what it does not know, and writes nothing for it" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var paths: paths_mod.Paths = .{};
+    paths.config.set(try tmpConfigPath(&tmp, &dir_buffer, &file_buffer));
+
+    const cases = [_][]const []const u8{
+        &.{ "ai-souls", "set", "no_such_event", "on" },
+        &.{ "ai-souls", "set", "turn_complete", "--volume", "500" },
+        &.{ "ai-souls", "set", "turn_complete", "--sound", "kazoo" },
+        &.{ "ai-souls", "set", "turn_complete", "--duration" },
+        &.{ "ai-souls", "set", "turn_complete", "loudly" },
+    };
+    for (cases) |case| {
+        try testing.expect(cli.run(testing.allocator, testing.io, case, &paths) == .handled_failed);
+    }
+
+    // None of those refusals left a config file behind.
+    const cwd = std.Io.Dir.cwd();
+    try testing.expectError(
+        error.FileNotFound,
+        cwd.access(testing.io, paths.config.slice(), .{}),
+    );
+}
+
+test "reset puts one event back without touching its neighbours" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var paths: paths_mod.Paths = .{};
+    paths.config.set(try tmpConfigPath(&tmp, &dir_buffer, &file_buffer));
+
+    const bend = &.{ "ai-souls", "set", "commit_made", "off", "--title", "IT IS DONE" };
+    const bend_other = &.{ "ai-souls", "set", "pr_created", "--title", "THE SUN RISES" };
+    try testing.expect(cli.run(testing.allocator, testing.io, bend, &paths) == .handled_ok);
+    try testing.expect(cli.run(testing.allocator, testing.io, bend_other, &paths) == .handled_ok);
+
+    const undo = &.{ "ai-souls", "reset", "commit_made" };
+    try testing.expect(cli.run(testing.allocator, testing.io, undo, &paths) == .handled_ok);
+
+    const config = cli.readConfig(testing.io, &paths);
+    const commit = &config.events[souls.indexOfKey("commit_made").?];
+    try testing.expect(commit.enabled);
+    try testing.expectEqualStrings("Commit made", commit.title.slice());
+    // The neighbour keeps its custom headline.
+    const pr = &config.events[souls.indexOfKey("pr_created").?];
+    try testing.expectEqualStrings("THE SUN RISES", pr.title.slice());
+}
+
+test "reset all is the factory floor" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var file_buffer: [paths_mod.max_path_bytes]u8 = undefined;
+    var paths: paths_mod.Paths = .{};
+    paths.config.set(try tmpConfigPath(&tmp, &dir_buffer, &file_buffer));
+
+    const bend = &.{ "ai-souls", "set", "turn_complete", "off", "--volume", "99" };
+    try testing.expect(cli.run(testing.allocator, testing.io, bend, &paths) == .handled_ok);
+    const undo = &.{ "ai-souls", "reset", "all" };
+    try testing.expect(cli.run(testing.allocator, testing.io, undo, &paths) == .handled_ok);
+
+    const config = cli.readConfig(testing.io, &paths);
+    const fresh = config_mod.Config.default();
+    for (config.events, fresh.events) |entry, default| {
+        try testing.expectEqual(default.enabled, entry.enabled);
+        try testing.expectEqual(default.volume, entry.volume);
+    }
+}
 
 test "the same hook twice in a row draws one screen" {
     // The wiring, against a real file. `throttle.zig` proves the rules
