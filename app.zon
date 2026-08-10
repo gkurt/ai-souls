@@ -23,6 +23,13 @@
                 .min_height = 520,
                 .restore_state = false,
                 .restore_policy = "center_on_primary",
+                // Nothing this app opens may take the keyboard. This
+                // window is created in EVERY process, including the ones
+                // that exist only to flash a banner — and its reveal
+                // activating the app is how a hook used to steal focus
+                // from whatever you were typing into. The cost is that
+                // `ai-souls settings` opens unfocused; click it once.
+                .activate_on_show = false,
                 // Closing the settings window ends the process. There is
                 // nothing for it to go on doing.
                 .close_policy = "quit",

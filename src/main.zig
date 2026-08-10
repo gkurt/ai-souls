@@ -116,6 +116,9 @@ const shell_windows = [_]native_sdk.ShellWindow{.{
     .min_height = 520,
     .restore_state = false,
     .restore_policy = .center_on_primary,
+    // Never take the keyboard. This window exists in a banner's process
+    // too — see app.zon, where the startup window's copy of this lives.
+    .activate_on_show = false,
     // Closing the settings window ends the process. The hooks do not
     // depend on it — each one starts its own.
     .close_policy = .quit,

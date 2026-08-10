@@ -24,17 +24,18 @@
 //! It polls fast enough to win the race against the host's first
 //! reveal, and handles the case where it does not.
 //!
-//! **On macOS the WINDOW needs none of that — the PROCESS does.** The
-//! descriptor's `activate_on_show = false` keeps the banner's own reveal
-//! passive, and the AppKit host honours it. But the app around it is
-//! still an ordinary foreground app: the host asks for
-//! `NSApplicationActivationPolicyRegular`, which is a Dock tile and a
-//! Cmd-Tab entry, and the settings window — always created, because
-//! `app.zon` declares it — activates the app when its own first frame
-//! reveals it. A hook's banner therefore took focus from whatever you
-//! were typing into. Both are undone in a screen process only; see
-//! `hideFromSwitcher` and the macOS half of `hideSettings`. The settings
-//! app itself still activates like any app, because someone asked for it.
+//! **Nothing here is what stops a banner taking focus.** No window this
+//! app declares may activate, so none of them says otherwise:
+//! `activate_on_show = false` on the overlay and on the shell window
+//! both, the latter in `app.zon` as well, because the host creates that
+//! one before any of this code runs. It is declared, not repaired.
+//!
+//! What is left for macOS is the app around the window. The host asks
+//! for `NSApplicationActivationPolicyRegular` — a Dock tile and a
+//! Cmd-Tab entry — and the shell window is created in a banner's process
+//! too, so it has to be put away like it is on Win32. See
+//! `hideFromSwitcher` and the macOS half of `hideSettings`; both are
+//! screen-process only.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -118,11 +119,6 @@ const mac = struct {
     fn msgId(target: Id, name: [:0]const u8) Id {
         const send: *const fn (Id, Sel) callconv(.c) Id = @ptrCast(&objc_msgSend);
         return send(target, sel(name));
-    }
-
-    fn msgVoid(target: Id, name: [:0]const u8) void {
-        const send: *const fn (Id, Sel) callconv(.c) void = @ptrCast(&objc_msgSend);
-        send(target, sel(name));
     }
 
     /// A `BOOL` is a signed char, so it is read as one: any value but 0
@@ -224,8 +220,7 @@ fn becomeAccessory(_: ?*anyopaque) callconv(.c) void {
 ///
 /// macOS does the same with `orderOut:`, which is `SW_HIDE`'s exact
 /// counterpart — no delegate, no close, the window simply leaves the
-/// glass — and it gives back the activation that window's own reveal
-/// took. Both platforms have to WAIT for the window to be visible
+/// glass. Both platforms have to WAIT for the window to be visible
 /// before hiding it: the host reveals it on its first frame, and a hide
 /// that lands earlier is undone by that reveal.
 pub fn hideSettings(comptime title: [:0]const u8) void {
@@ -256,12 +251,6 @@ var hide_attempts_left: usize = attempts;
 fn hideTick(_: ?*anyopaque) callconv(.c) void {
     const nsapp = mac.app();
     if (nsapp == null) return;
-    // Every tick, not just the one that finds the window: the reveal we
-    // are chasing activates the app, and a banner must never be the
-    // active app. Handing focus straight back is the closest thing to
-    // never having taken it — the host's activation is not ours to
-    // suppress at the source.
-    if (mac.msgFlag(nsapp, "isActive")) mac.msgVoid(nsapp, "deactivate");
     if (orderOutSettings(nsapp)) return;
     if (hide_attempts_left == 0) return;
     hide_attempts_left -= 1;
@@ -274,9 +263,7 @@ fn hideTick(_: ?*anyopaque) callconv(.c) void {
 }
 
 /// Order the settings window off the glass. Returns true once there is
-/// nothing left to do — which is only ever after hiding it, so a
-/// process that never showed one keeps handing focus back until it
-/// runs out of attempts or exits with its banner.
+/// nothing left to do.
 ///
 /// The title is matched WHOLE, like `FindWindowExW` does: a banner's own
 /// title starts with the same two words.

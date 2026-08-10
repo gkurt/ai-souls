@@ -80,12 +80,15 @@ Invariants worth knowing before you change things:
   really destroys the window and stops the app, which would kill the banner.
   Both wait for the window to be visible first — the host's own reveal
   would undo an earlier hide.
-- **A banner must never be the active app.** On Win32 that is a window
-  style (`WS_EX_NOACTIVATE`); on macOS it is the process — the host asks
-  for `NSApplicationActivationPolicyRegular`, and a screen process
-  downgrades itself to `Accessory` and gives back any activation the
-  settings window's reveal takes. Screen processes only: a settings app
-  with no Dock tile would be a worse app.
+- **No window this app declares may activate.** `activate_on_show =
+  false` on the overlay AND on the shell window — in `app.zon` too, since
+  the host creates that one before any app code runs. A banner's process
+  gets a shell window like every other, and its reveal taking the
+  keyboard is the whole bug. It costs the settings window its focus on
+  open, which is the trade; there is no `focusWindow` effect to undo it
+  with. A screen process additionally drops to
+  `NSApplicationActivationPolicyAccessory` so it has no Dock tile and no
+  Cmd-Tab entry — screen processes only, or the settings app loses both.
 - **The throttle is a file, and it is decided before the window opens.**
   `fire` reads `~/.ai-souls/fired.txt`, and a screen it decides against
   costs one read and exits `handled_ok` — a hook that reported failure

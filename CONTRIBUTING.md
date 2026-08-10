@@ -408,18 +408,21 @@ Everything below was measured on Windows 11.
   it. And the descriptor's `x`/`y` are never applied: the Win32 host
   passes `CW_USEDEFAULT` to `CreateWindowExW`, which parks the bar at
   the top of the screen, so it is moved to the middle afterwards.
-- **On macOS it is the PROCESS that needs fixing, not the window.** The
-  descriptor's `activate_on_show = false` is honoured, so the banner's
-  own reveal is passive — but the app around it asks for
+- **No window this app declares may activate.** `activate_on_show =
+  false` on the overlay and on the shell window both — and on the shell
+  window it has to be in `app.zon`, because the host creates that one
+  before any app code runs. The shell window is created in a banner's
+  process too, and its reveal activating the app is how a hook used to
+  take the keyboard from whatever you were typing into. The cost is that
+  `ai-souls settings` opens unfocused: the SDK exposes no `focusWindow`
+  effect, so there is no asking for it back, and one click is the price.
+- **A screen process also leaves the Dock on macOS.** The host asks for
   `NSApplicationActivationPolicyRegular`, which is a Dock tile and a
-  Cmd-Tab entry, and the always-created settings window activates the
-  app when its first frame reveals it. So a screen process asks for
-  `NSApplicationActivationPolicyAccessory` and hands back any activation
-  it is given, both through `objc_msgSend` on the main queue — the app's
-  only Objective-C, and the only place it borrows the main thread from
+  Cmd-Tab entry either way; a banner asks for `Accessory` instead,
+  through `objc_msgSend` on the main queue — the app's only
+  Objective-C, and the only place it borrows the main thread from
   AppKit. `Accessory`, not `Prohibited`: the latter documents itself as
-  unable to create windows at all, and the banner is a window. A
-  settings process changes nothing, because someone asked for it.
+  unable to create windows at all, and the banner is a window.
 - **`native automate snapshot` is not trustworthy here.** It served a
   cached snapshot from a long-dead process throughout development —
   check `publisher_pid` against a live process before believing it.
