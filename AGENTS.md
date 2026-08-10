@@ -80,6 +80,11 @@ Why they would care.
 `packages` takes `major` / `minor` / `patch`. Keep entries short and about
 behaviour, not implementation.
 
+`bun run tegami` is the only Tegami command to run locally. **Don't run
+`tegami version`** — it is CI's job, and its GitHub plugin rewrites this repo's
+`user.name`/`user.email` to the Actions bot as a side effect, which then authors
+your next commit.
+
 The rest is automatic: `version.yml` opens a Version Packages PR, merging it
 tags `v<version>`, and `release.yml` builds both platforms and drafts the
 release. See the README's release section for the parts that still need hands.
