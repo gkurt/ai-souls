@@ -1,8 +1,9 @@
 //! Primary display size, in the logical points window geometry uses.
 //!
-//! Read once in `main` and carried in the model, because the overlay is
-//! positioned at (0, 0) with the display's own size and `update` may not
-//! ask the OS anything.
+//! Read once in `main` and carried in the model, because the overlay
+//! spans the display and `update` may not ask the OS anything. `main`
+//! also turns it into the frame the banner is actually moved to, since
+//! no host applies the one the descriptor asks for — see `bandFrame`.
 
 const std = @import("std");
 const builtin = @import("builtin");

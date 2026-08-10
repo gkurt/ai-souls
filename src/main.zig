@@ -191,9 +191,10 @@ fn declaredWindows(
         .canvas_label = app.overlay_canvas_label,
         // A banner names itself as one, so another banner can find it.
         .title = if (model.screen_only == null) overlay_window_title else screen_window_title,
-        // Declared for the platforms that honour it. The Win32 host
-        // passes CW_USEDEFAULT to CreateWindowExW and drops these on
-        // the floor, so `overlay_style` re-centres the window there.
+        // Declared, and applied by neither host: Win32 passes
+        // CW_USEDEFAULT to CreateWindowExW, and macOS takes the size
+        // while leaving the origin to AppKit. `overlay_style` moves the
+        // window on both — see `bandFrame`.
         .x = 0,
         .y = app.bandTop(model.screen_width, model.screen_height),
         .width = model.screen_width,
@@ -211,6 +212,26 @@ fn declaredWindows(
         .activate_on_show = false,
     };
     return scratch.windows[0..1];
+}
+
+/// The same band `declaredWindows` asks for, in the space macOS places
+/// windows in: AppKit's global points, whose origin is the bottom-left
+/// corner of the primary display. So the descriptor's `y` — a drop from
+/// the top of the display — has to be measured back up from the bottom
+/// instead. A centred band comes out at `bandTop` again, give or take
+/// the rounding it does.
+///
+/// The display is the primary one, because that is the only one this app
+/// measures — see `screen.zig`. Which means the band spans it and no
+/// other, however many are plugged in.
+fn bandFrame(size: screen.Size) overlay_style.Frame {
+    const height = app.bandHeight(size.width, size.height);
+    return .{
+        .x = 0,
+        .y = size.height - app.bandTop(size.width, size.height) - height,
+        .width = size.width,
+        .height = height,
+    };
 }
 
 fn windowView(ui: *AppUi, model: *const Model, window_label: []const u8) AppUi.Node {
@@ -265,6 +286,10 @@ pub fn main(init: std.process.Init) !void {
         .run_screen => |entry| entry,
     };
 
+    // Before the window exists, because `adopt` has to know where to put
+    // it and `update` may not ask the OS anything.
+    const display = screen.primary();
+
     if (screen_only != null) {
         // Getting this far with a banner already up means the throttle
         // decided this screen outranks it (see `throttle.zig`), so the
@@ -283,10 +308,11 @@ pub fn main(init: std.process.Init) !void {
     // The overlay window does not exist yet — this waits for it, then
     // fixes what the descriptor cannot express. See `overlay_style` for
     // why none of it can be done declaratively.
+    const band = bandFrame(display);
     if (screen_only == null) {
-        overlay_style.adopt(overlay_window_title);
+        overlay_style.adopt(overlay_window_title, band);
     } else {
-        overlay_style.adopt(screen_window_title);
+        overlay_style.adopt(screen_window_title, band);
     }
 
     const app_state = try SoulsApp.create(std.heap.page_allocator, .{
@@ -309,7 +335,7 @@ pub fn main(init: std.process.Init) !void {
         false;
     app_state.model = initialModel(
         paths,
-        screen.primary(),
+        display,
         opaque_overlay,
         screen_only,
     );

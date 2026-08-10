@@ -10,12 +10,16 @@
 //! past and be ignored, both are wrong. The cure is `WS_EX_TOOLWINDOW`,
 //! which `WindowDescriptor` does not expose.
 //!
-//! **It must be vertically centred.** `WindowDescriptor` has `x` and
-//! `y`, but the Win32 host passes `CW_USEDEFAULT` for both to
-//! `CreateWindowExW` and never applies them, so every window it makes
-//! lands wherever the shell puts it — for a `WS_POPUP`, the top-left
-//! corner. The bar has to be moved after the fact or it sits across the
-//! top of the screen instead of through the middle.
+//! **It must be vertically centred, and NO host applies the position it
+//! is asked for.** `WindowDescriptor` has `x` and `y`; the Win32 host
+//! passes `CW_USEDEFAULT` for both to `CreateWindowExW`, so every window
+//! it makes lands wherever the shell puts it — for a `WS_POPUP`, the
+//! top-left corner. macOS applies the size and not the origin, which is
+//! invisible on one display and obvious on two: measured with a 1512x982
+//! primary and a 1920x1080 beside it, a band asked for at (0, 387) was
+//! created at (1920, 149) — on the other display, and hanging off the
+//! right of it. So the bar is moved after the fact on both, or it sits
+//! somewhere other than through the middle of the screen.
 //!
 //! Why a thread: the window does not exist until the runtime creates
 //! it, which happens inside `runner.runWithOptions`, and there is no
@@ -30,8 +34,13 @@
 //! both, the latter in `app.zon` as well, because the host creates that
 //! one before any of this code runs. It is declared, not repaired.
 //!
-//! What is left for macOS is the app around the window. The host asks
-//! for `NSApplicationActivationPolicyRegular` — a Dock tile and a
+//! Why the main queue on macOS, and not a thread: AppKit may only be
+//! asked about its windows from the thread that owns them. Everything
+//! here that touches one is a poll re-armed with `dispatch_after_f`,
+//! which is the same watcher with the run loop doing the waiting.
+//!
+//! The rest of what macOS needs is the app around the window. The host
+//! asks for `NSApplicationActivationPolicyRegular` — a Dock tile and a
 //! Cmd-Tab entry — and the shell window is created in a banner's process
 //! too, so it has to be put away like it is on Win32. See
 //! `hideFromSwitcher` and the macOS half of `hideSettings`; both are
@@ -91,6 +100,12 @@ const mac = struct {
     /// at all, and the banner IS a window.
     const policy_accessory: isize = 1;
 
+    /// `NSRect`. Declared flat rather than as a `CGPoint` and a `CGSize`
+    /// because the C ABI flattens it either way: four `CGFloat`s go in
+    /// v0-v3 on arm64 and on the stack on x86_64, whichever way the
+    /// struct is nested.
+    const Rect = extern struct { x: f64, y: f64, width: f64, height: f64 };
+
     extern fn objc_getClass(name: [*:0]const u8) Id;
     extern fn sel_registerName(name: [*:0]const u8) Sel;
     /// Never called through this declaration. arm64 has no variadic
@@ -143,6 +158,11 @@ const mac = struct {
         send(target, sel(name), argument);
     }
 
+    fn msgWithRectFlag(target: Id, name: [:0]const u8, rect: Rect, flag: bool) void {
+        const send: *const fn (Id, Sel, Rect, i8) callconv(.c) void = @ptrCast(&objc_msgSend);
+        send(target, sel(name), rect, @intFromBool(flag));
+    }
+
     fn msgWithInteger(target: Id, name: [:0]const u8, argument: isize) void {
         const send: *const fn (Id, Sel, isize) callconv(.c) i8 = @ptrCast(&objc_msgSend);
         _ = send(target, sel(name), argument);
@@ -159,21 +179,87 @@ const mac = struct {
 const attempts = 400;
 const poll_interval_ms = 25;
 
+/// Where the band belongs, in the points the platform places windows in.
+///
+/// macOS is the only caller that reads it, so it is in AppKit's global
+/// space: the origin is the BOTTOM-left corner of the primary display
+/// and y grows upwards, which is why `main` hands over a flipped `y`
+/// rather than the descriptor's own. Win32 has to work in physical
+/// pixels and derives its own rect — see `centre`.
+pub const Frame = struct {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+};
+
 /// Start watching for the overlay window. Returns immediately.
 ///
 /// `title` must be the overlay's window title and must be unique to it
 /// — this is how the window is found, so the overlay does not share the
 /// settings window's title. Comptime, so a caller passes one UTF-8
 /// literal and each platform takes the encoding its own API speaks.
-pub fn adopt(comptime title: [:0]const u8) void {
+///
+/// `band` is where the window has to end up. Win32 is not given it:
+/// `centre` reads the display and the window's own height in the physical
+/// pixels those APIs speak, and that height is the one number it does not
+/// get to invent.
+pub fn adopt(comptime title: [:0]const u8, band: Frame) void {
     switch (builtin.os.tag) {
-        .windows => {
-            const wide = comptime std.unicode.utf8ToUtf16LeStringLiteral(title);
-            const thread = std.Thread.spawn(.{}, watch, .{wide}) catch return;
-            thread.detach();
-        },
+        .windows => adoptWin32(title),
+        .macos => adoptMac(title, band),
         else => {},
     }
+}
+
+fn adoptWin32(comptime title: [:0]const u8) void {
+    const wide = comptime std.unicode.utf8ToUtf16LeStringLiteral(title);
+    const thread = std.Thread.spawn(.{}, watch, .{wide}) catch return;
+    thread.detach();
+}
+
+fn adoptMac(title: [:0]const u8, band: Frame) void {
+    banner_title = title;
+    banner_frame = band;
+    mac.dispatch_async_f(mac.main_queue, null, placeTick);
+}
+
+/// The banner's title and target frame, for the macOS watcher. A process
+/// declares one overlay window and never moves it again, so there is
+/// nothing to thread through the dispatch context.
+var banner_title: [:0]const u8 = "";
+var banner_frame: Frame = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+var place_attempts_left: usize = attempts;
+
+fn placeTick(_: ?*anyopaque) callconv(.c) void {
+    const nsapp = mac.app();
+    if (nsapp == null) return;
+    if (placeBanner(nsapp)) return;
+    if (place_attempts_left == 0) return;
+    place_attempts_left -= 1;
+    mac.dispatch_after_f(
+        mac.dispatch_time(mac.time_now, poll_interval_ms * std.time.ns_per_ms),
+        mac.main_queue,
+        null,
+        placeTick,
+    );
+}
+
+/// Move the banner onto the display it was declared for. Returns true
+/// once there is nothing left to do.
+///
+/// Unlike `orderOutSettings` this wants the window BEFORE it is visible:
+/// the host creates it ordered-out and reveals it on its first present,
+/// and a move that lands after that reveal is one the eye can catch.
+fn placeBanner(nsapp: mac.Id) bool {
+    const window = findWindow(nsapp, banner_title, false) orelse return false;
+    mac.msgWithRectFlag(window, "setFrame:display:", .{
+        .x = banner_frame.x,
+        .y = banner_frame.y,
+        .width = banner_frame.width,
+        .height = banner_frame.height,
+    }, true);
+    return true;
 }
 
 /// Take this process out of the Dock and the app switcher — macOS, and
@@ -232,10 +318,6 @@ pub fn hideSettings(comptime title: [:0]const u8) void {
         },
         .macos => {
             settings_title = title;
-            // A main-queue poll rather than a thread: AppKit may only be
-            // asked about its windows from the main thread. See
-            // `hideFromSwitcher` for why this cannot run before the
-            // runtime is up.
             mac.dispatch_async_f(mac.main_queue, null, hideTick);
         },
         else => {},
@@ -264,26 +346,34 @@ fn hideTick(_: ?*anyopaque) callconv(.c) void {
 
 /// Order the settings window off the glass. Returns true once there is
 /// nothing left to do.
+fn orderOutSettings(nsapp: mac.Id) bool {
+    const window = findWindow(nsapp, settings_title, true) orelse return false;
+    mac.msgWithId(window, "orderOut:", null);
+    return true;
+}
+
+/// This process's window with exactly this title, or null while there is
+/// none. `[NSApp windows]` holds ordered-out windows too, which is what
+/// makes `visible_only = false` mean "as soon as it exists".
 ///
 /// The title is matched WHOLE, like `FindWindowExW` does: a banner's own
-/// title starts with the same two words.
-fn orderOutSettings(nsapp: mac.Id) bool {
+/// title starts with the same two words as the settings window's.
+fn findWindow(nsapp: mac.Id, title: [:0]const u8, visible_only: bool) mac.Id {
     const windows = mac.msgId(nsapp, "windows");
-    if (windows == null) return false;
+    if (windows == null) return null;
 
     const count = mac.msgCount(windows, "count");
     var index: usize = 0;
     while (index < count) : (index += 1) {
         const window = mac.msgAtIndex(windows, "objectAtIndex:", index);
         if (window == null) continue;
-        if (!mac.msgFlag(window, "isVisible")) continue;
-        const title = mac.msgId(window, "title") orelse continue;
-        const text = mac.msgCString(title, "UTF8String") orelse continue;
-        if (!std.mem.eql(u8, std.mem.span(text), settings_title)) continue;
-        mac.msgWithId(window, "orderOut:", null);
-        return true;
+        if (visible_only and !mac.msgFlag(window, "isVisible")) continue;
+        const window_title = mac.msgId(window, "title") orelse continue;
+        const text = mac.msgCString(window_title, "UTF8String") orelse continue;
+        if (!std.mem.eql(u8, std.mem.span(text), title)) continue;
+        return window;
     }
-    return false;
+    return null;
 }
 
 /// Whether this platform can take another process's banner down, which

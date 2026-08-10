@@ -90,6 +90,12 @@ Invariants worth knowing before you change things:
   with. A screen process additionally drops to
   `NSApplicationActivationPolicyAccessory` so it has no Dock tile and no
   Cmd-Tab entry — screen processes only, or the settings app loses both.
+- **No host applies the overlay descriptor's `x`/`y`.** Win32 passes
+  `CW_USEDEFAULT`; macOS takes the size and puts the window where AppKit
+  likes, which with a second display attached is not on the right one.
+  So the banner is moved once it exists — `overlay_style` on both
+  platforms, from the frame `main.bandFrame` works out. Delete either
+  half and the bar is wherever the window system felt like.
 - **A verb's output on Windows has to go and find the terminal.** The
   release binary is GUI-subsystem, so Windows never attaches it to the
   console that launched it and every `say` lands nowhere — measured as a

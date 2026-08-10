@@ -400,14 +400,24 @@ Everything below was measured on Windows 11.
   and runs noticeably smoother. It is also the fallback for
   remote-desktop and compositor setups that cannot present a layered
   window at all, where a solid banner beats an invisible one.
-- **Two things about the overlay window are fixed from Win32 directly**
+- **The overlay window's style is fixed from Win32 directly**
   (`src/overlay_style.zig`), because the SDK's `WindowDescriptor` cannot
-  express them. It is a borderless top-level window — `WS_POPUP` with no
+  express it. It is a borderless top-level window — `WS_POPUP` with no
   owner — which the shell would otherwise give a taskbar button and an
   Alt+Tab entry, so `WS_EX_TOOLWINDOW` and `WS_EX_NOACTIVATE` are set on
-  it. And the descriptor's `x`/`y` are never applied: the Win32 host
-  passes `CW_USEDEFAULT` to `CreateWindowExW`, which parks the bar at
-  the top of the screen, so it is moved to the middle afterwards.
+  it.
+- **No host applies the descriptor's `x`/`y`,** so the bar is moved after
+  the window exists or it is not where it was asked to be. The Win32 host
+  passes `CW_USEDEFAULT` to `CreateWindowExW`, which parks it across the
+  top of the screen. The AppKit host takes the size and leaves the origin
+  to AppKit, which is easy to miss on one display and obvious on two:
+  measured with a 1512x982 primary and a 1920x1080 beside it, a band
+  asked for at (0, 387) was created at (1920, 149) — on the other
+  display, hanging off the right of it. `overlay_style` does the moving
+  on both, `SetWindowPos` in the physical pixels Win32 speaks and
+  `setFrame:display:` in AppKit's global points, whose origin is the
+  primary display's BOTTOM-left — which is why `main.bandFrame` hands
+  macOS a flipped `y` rather than the descriptor's own.
 - **No window this app declares may activate.** `activate_on_show =
   false` on the overlay and on the shell window both — and on the shell
   window it has to be in `app.zon`, because the host creates that one
@@ -419,9 +429,9 @@ Everything below was measured on Windows 11.
 - **A screen process also leaves the Dock on macOS.** The host asks for
   `NSApplicationActivationPolicyRegular`, which is a Dock tile and a
   Cmd-Tab entry either way; a banner asks for `Accessory` instead,
-  through `objc_msgSend` on the main queue — the app's only
-  Objective-C, and the only place it borrows the main thread from
-  AppKit. `Accessory`, not `Prohibited`: the latter documents itself as
+  through `objc_msgSend` on the main queue like the rest of the AppKit
+  errands in `overlay_style` — there is no Objective-C in this project
+  and no need for any. `Accessory`, not `Prohibited`: the latter is
   unable to create windows at all, and the banner is a window.
 - **Windows prints nothing unless it goes looking for the terminal**
   (`src/console.zig`). The release binary is GUI-subsystem — a
