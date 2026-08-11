@@ -480,13 +480,21 @@ Everything below was measured on Windows 11.
   `app.zon`, because the host creates that one before any app code
   runs. A window's reveal activating the app is how a hook used to take
   the keyboard from whatever you were typing into.
-- **A banner process also leaves the Dock on macOS.** The host asks for
-  `NSApplicationActivationPolicyRegular`, which is a Dock tile and a
-  Cmd-Tab entry either way; a banner asks for `Accessory` instead,
-  through `objc_msgSend` on the main queue like the rest of the AppKit
-  errands in `overlay_style` — there is no Objective-C in this project
-  and no need for any. `Accessory`, not `Prohibited`: the latter is
-  unable to create windows at all, and the banner is a window.
+- **On macOS the windows are not enough: the PROCESS refuses the
+  foreground.** Focus there belongs to the app, and launching one from
+  the app you are working in brings it forward whatever its windows
+  asked for — nothing in this process has to ask. Measured against
+  NSWorkspace's activation notifications, an accessory-policy banner
+  deactivated the app that spawned it for the whole two seconds it was
+  up, with no window of ours ever becoming key. So `refuseForeground`
+  pins `NSApplicationActivationPolicyProhibited` before the runtime
+  starts, which is a process that cannot be made active at all — and
+  pins rather than sets it, because the host asks for `Regular` inside
+  its own init, after that call and before the run loop exists. Its
+  documentation says a prohibited app "may not create windows"; both
+  the shell band and the opaque-mode window draw under it, verified on
+  screen. The Dock tile and the Cmd-Tab entry go with it, which is the
+  other thing a banner never wanted.
 - **Windows prints nothing unless it goes looking for the terminal**
   (`src/console.zig`). The release binary is GUI-subsystem — a
   console-subsystem one flashes a terminal window behind every banner —

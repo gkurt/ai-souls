@@ -28,11 +28,13 @@
 //! It polls fast enough to win the race against the host's first
 //! reveal, and handles the case where it does not.
 //!
-//! **Nothing here is what stops a banner taking focus.** No window this
-//! app declares may activate, so none of them says otherwise:
-//! `activate_on_show = false` on every window, the shell band's in
-//! `app.zon` as well, because the host creates that one before any of
-//! this code runs. It is declared, not repaired.
+//! **No window this app declares may activate** — `activate_on_show =
+//! false` on every one of them, the shell band's in `app.zon` as well,
+//! because the host creates that one before any of this code runs. On
+//! Windows that is the whole story. On macOS focus belongs to the APP
+//! rather than to the window, and a launch brings a newly launched app
+//! forward whatever its windows asked for, so the process itself has to
+//! refuse the foreground: see `refuseForeground`.
 //!
 //! Why the main queue on macOS, and not a thread: AppKit may only be
 //! asked about its windows from the thread that owns them. Everything
@@ -40,9 +42,9 @@
 //! which is the same watcher with the run loop doing the waiting.
 //!
 //! The rest of what macOS needs is the app around the window. The host
-//! asks for `NSApplicationActivationPolicyRegular` — a Dock tile and a
-//! Cmd-Tab entry — and a banner deserves neither. See
-//! `hideFromSwitcher`.
+//! asks for `NSApplicationActivationPolicyRegular` — a Dock tile, a
+//! Cmd-Tab entry, and an app the system is free to bring to the front —
+//! and a banner deserves none of the three. See `refuseForeground`.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -92,11 +94,13 @@ const mac = struct {
     const Id = ?*anyopaque;
     const Sel = ?*anyopaque;
 
-    /// `NSApplicationActivationPolicyAccessory`: no Dock tile, no menu
-    /// bar, no Cmd-Tab entry — and windows still draw. Deliberately not
-    /// `Prohibited`, which documents itself as unable to create windows
-    /// at all, and the banner IS a window.
-    const policy_accessory: isize = 1;
+    /// `NSApplicationActivationPolicyProhibited`: no Dock tile, no menu
+    /// bar, no Cmd-Tab entry — and, the part that matters, a process
+    /// that cannot be made the active app. Its documentation says such
+    /// an app "may not create windows or be activated"; the banner is a
+    /// window and it does draw, verified on screen. See
+    /// `refuseForeground` for why nothing weaker is enough.
+    const policy_prohibited: isize = 2;
 
     /// `NSRect`. Declared flat rather than as a `CGPoint` and a `CGSize`
     /// because the C ABI flattens it either way: four `CGFloat`s go in
@@ -104,8 +108,17 @@ const mac = struct {
     /// struct is nested.
     const Rect = extern struct { x: f64, y: f64, width: f64, height: f64 };
 
+    const Method = ?*anyopaque;
+    /// `-[NSApplication setActivationPolicy:]`, as a function pointer.
+    /// `method_setImplementation` takes an untyped `IMP`; declaring it
+    /// as the exact signature of the one method this file replaces is
+    /// the same discipline the `objc_msgSend` casts above follow.
+    const PolicyImp = *const fn (Id, Sel, isize) callconv(.c) i8;
+
     extern fn objc_getClass(name: [*:0]const u8) Id;
     extern fn sel_registerName(name: [*:0]const u8) Sel;
+    extern fn class_getInstanceMethod(class: Id, name: Sel) Method;
+    extern fn method_setImplementation(method: Method, imp: *const anyopaque) ?*const anyopaque;
     /// Never called through this declaration. arm64 has no variadic
     /// `objc_msgSend`, so every call site casts it to the exact
     /// signature of the message it is sending — that is the supported
@@ -259,25 +272,50 @@ fn dressBanner(nsapp: mac.Id) bool {
     return true;
 }
 
-/// Take this process out of the Dock and the app switcher — macOS. The
-/// Win32 half of this is a window style (`WS_EX_TOOLWINDOW`, in `apply`
-/// below); the macOS half is the whole PROCESS's activation policy,
-/// and a process that exists to flash one banner has no Dock tile or
-/// Cmd-Tab entry to lose.
-pub fn hideFromSwitcher() void {
+/// Keep this process out of the foreground for its whole life — macOS.
+/// The Win32 half of the same idea is a window style
+/// (`WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`, in `apply` below); here it is
+/// the whole PROCESS, because on macOS focus belongs to the app and not
+/// to the window.
+///
+/// **`Prohibited`, not `Accessory`.** An accessory process has no Dock
+/// tile and no Cmd-Tab entry, which is most of what a banner wants — but
+/// it can still be brought to the front, and launching one from the app
+/// you are working in does exactly that. Measured against NSWorkspace's
+/// activation notifications: an accessory banner deactivated the app
+/// that spawned it for the entire two seconds it was on screen. Nothing
+/// in this process asks for that (no window here activates, and
+/// `-[NSApplication activate]` neutered changes nothing) — the launch
+/// itself is what brings a newly launched app forward. A prohibited
+/// process cannot be made active at all, which is the only setting that
+/// holds. The banner still draws: it is a borderless, click-through
+/// canvas window with no keyboard and no menu bar to lose.
+///
+/// **Pinned, not set.** The host asks for `Regular` inside its own
+/// init, which is after this runs and before the run loop exists — so a
+/// policy merely set here is overwritten with time to spare for the
+/// launch to take the keyboard. So `setActivationPolicy:` is replaced
+/// with one that answers prohibited whoever asks and whatever they ask
+/// for, and the host's own call is what puts it into effect. Nothing
+/// here creates `NSApp`; the runtime still does that, a moment later,
+/// exactly as it would have.
+pub fn refuseForeground() void {
     if (builtin.os.tag != .macos) return;
-    // Queued rather than done here: `NSApp` does not exist until the
-    // runtime creates it inside `runner.runWithOptions`, and AppKit is
-    // the main thread's. A block queued now runs on the first turn of
-    // the run loop — after the host has asked for the policy we are
-    // replacing, and before any window has presented.
-    mac.dispatch_async_f(mac.main_queue, null, becomeAccessory);
+    if (original_set_policy != null) return;
+    const class = mac.objc_getClass("NSApplication");
+    if (class == null) return;
+    const method = mac.class_getInstanceMethod(class, mac.sel("setActivationPolicy:")) orelse return;
+    original_set_policy = @ptrCast(@alignCast(mac.method_setImplementation(method, &prohibitedPolicyOnly)));
 }
 
-fn becomeAccessory(_: ?*anyopaque) callconv(.c) void {
-    const nsapp = mac.app();
-    if (nsapp == null) return;
-    mac.msgWithInteger(nsapp, "setActivationPolicy:", mac.policy_accessory);
+/// The original `-[NSApplication setActivationPolicy:]`, kept so the
+/// replacement can do the work with the answer this process wants. Also
+/// the "already done" flag: `refuseForeground` runs once per process.
+var original_set_policy: ?mac.PolicyImp = null;
+
+fn prohibitedPolicyOnly(target: mac.Id, name: mac.Sel, _: isize) callconv(.c) i8 {
+    const original = original_set_policy orelse return 0;
+    return original(target, name, mac.policy_prohibited);
 }
 
 /// Windows-only: keep the opaque-mode shell band out of the taskbar.
@@ -287,7 +325,7 @@ fn becomeAccessory(_: ?*anyopaque) callconv(.c) void {
 /// chromeless `WS_POPUP` with no owner still gets a taskbar button for
 /// the seconds it exists, and `apply` is what takes that away. macOS
 /// needs no counterpart: the whole process is already out of the Dock
-/// and the switcher (`hideFromSwitcher`), and an invisible window has
+/// and the switcher (`refuseForeground`), and an invisible window has
 /// nothing else to leak.
 pub fn excludeFromTaskbar(comptime title: [:0]const u8) void {
     if (builtin.os.tag != .windows) return;

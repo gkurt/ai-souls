@@ -93,8 +93,13 @@ Invariants worth knowing before you change things:
   false` on every window — in `app.zon` for the shell band, since the
   host creates that one before any app code runs. A banner appearing
   over the editor you are typing into must never take the keyboard.
-  Every process also drops to `NSApplicationActivationPolicyAccessory`
-  on macOS, so it has no Dock tile and no Cmd-Tab entry.
+  On macOS the windows are not enough, because focus there belongs to
+  the APP: the launch brings a newly launched process forward on its
+  own, so every process pins itself to
+  `NSApplicationActivationPolicyProhibited` before the runtime starts
+  (`overlay_style.refuseForeground`) — pins, because the host asks for
+  `Regular` afterwards. `Accessory` is not enough either; it can still
+  be made the active app, and was.
 - **No host applies the overlay descriptor's `x`/`y`.** Win32 passes
   `CW_USEDEFAULT`; macOS takes the size and puts the window where AppKit
   likes, which with a second display attached is not on the right one.

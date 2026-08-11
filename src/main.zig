@@ -289,8 +289,10 @@ pub fn main(init: std.process.Init) !void {
     overlay_style.dismissOthers(screen_window_title);
     overlay_style.dismissOthers(opaque_window_title);
     // A banner is not an app: no Dock tile, no app switcher entry, and
-    // never the thing you are typing into.
-    overlay_style.hideFromSwitcher();
+    // never the thing you are typing into. Before the window system is
+    // touched — on macOS the launch itself would otherwise bring this
+    // process to the front.
+    overlay_style.refuseForeground();
 
     const opaque_overlay = if (init.environ_map.get("AI_SOULS_OPAQUE") orelse
         init.environ_map.get("CLAUDE_SOULS_OPAQUE")) |value|
