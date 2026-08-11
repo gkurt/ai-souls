@@ -1,44 +1,20 @@
 core:changelogs:
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## The bar has no border around it any more\n\nmacOS was drawing a window shadow behind the banner, and because the bar\nis see-through the shadow showed through its own edges as a black rim on\nall four sides. The soft edges now dissolve into whatever is underneath\ninstead of stopping at a line.\n"
-    filename: banner-shadow.md
+  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## A banner no longer takes focus from what you are working in (macOS)\n\nOn macOS a screen would quietly become the active app while it was up,\nso keystrokes stopped going to the editor you were typing into. The\nbanner process now refuses the foreground outright: it draws over\neverything, it stays click-through, and it never becomes the app in\nfront.\n"
+    filename: banner-never-takes-focus-on-macos.md
     v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## Settings from the command line\n\n`ai-souls set <event>` arms, disarms, and reshapes any event's screen —\non/off plus `--style`, `--sound`, `--volume`, `--duration`, `--title`,\nand `--subtitle` — and `ai-souls reset <event|all>` puts things back to\ntheir defaults. `set` prints the row back the way `status` lists it, and\ntells you when arming changed so the hooks need an `install`.\n"
-    filename: cli-settings.md
+  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## Screens start at 40% volume\n\nTwenty was quiet enough to miss. Existing installs keep whatever they\nhave set; `ai-souls reset all` takes the new level, and `--volume` still\noverrides it per event.\n"
+    filename: louder-out-of-the-box.md
     v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## \"Commit made\" and \"PR created\" only fire for a commit and a PR\n\nBoth screens were turning up for ordinary Bash calls — a `grep`, an\n`echo` — several times a session. The hook that runs them is narrowed to\none command, but that filter quietly matches everything for commands\nClaude Code cannot read statically, so `fire` now checks the command\nitself before drawing.\n"
-    filename: commit-and-pr-screens-check-the-command.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## The Death headline reads as words again\n\nThe red was so close to the band behind it that the type came out as a\nwarm smudge. It is a touch brighter now, and the same deep blood colour.\n"
-    filename: death-headline-reads-as-type.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## `install` no longer skips a binary that is the same size as the last one\n\nIt decided whether the copy your hooks run was up to date from the file's\nsize and path alone, so an upgrade that happened to come out the same\nlength was reported as installed and never actually copied. Your hooks\nkept running the previous version with nothing to say so.\n"
-    filename: install-refreshes-the-copy.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## Banners land in the middle of the screen on macOS\n\nA screen used to be drawn wherever AppKit felt like putting it, which\nwith a second display plugged in meant a bar somewhere off to one side\nwith half of it past the edge of the monitor. It now spans the display\nyou are working on and sits through the middle of it, the way it always\ndid on Windows.\n"
-    filename: macos-banner-placement.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## The settings window is gone, and so is the flash before a banner\n\nEvery screen used to open the settings window for a blink before hiding\nit — the app's one required window, put away as fast as the watchers\ncould catch it. Now the banner is the app's only window, so there is\nnothing to flash and nothing to hide: a screen appears as the banner,\nalready rendered, and nothing else.\n\nConfiguration moved to the command line: `ai-souls set <event>` and\n`ai-souls reset <event|all>` change everything the window did, and\n`ai-souls settings` now shows the current settings instead of opening a\nwindow. Previews are `ai-souls fire <event>` — the real thing.\n"
-    filename: no-settings-window.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: minor\n---\n\n## A failed tool call no longer draws a screen\n\nIt is on the list, one switch away, and everything you have already\nturned on stays on. But it is not armed for a new install: a tool call\ncoming back a failure is usually a step in a run that is going fine, and\nthe agent has moved on before you have finished reading the banner.\n"
-    filename: tool-failed-off.md
-    v: 0.0.0
-  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## The commands say something on Windows\n\n`install`, `status`, `events`, every error — all of it printed into the\nvoid from a terminal, because the app is a windowed program and Windows\ndoes not hand those the console you ran them from. The install worked;\nit just never told you so. Now it does, accented characters included.\n\n## Instructions you can actually paste\n\nInstalled with `npx`? Nothing is left on PATH afterwards, so being told\nto run `ai-souls settings` was a dead end. It now says `npx ai-souls\nsettings` when that is what you need.\n"
-    filename: windows-cli-output.md
+  - content: "---\npackages:\n  ai-souls:\n    type: patch\n---\n\n## \"Turn completed\" no longer fires when the turn is waiting on a subagent\n\nClaude Code ends its turn the moment it hands work to a subagent, and\nends it again when that work comes back — so half the banners you were\ngetting announced the opposite of what had happened. The screen now\nwaits for the turn that really did finish.\n"
+    filename: turn-complete-waits-for-subagents.md
     v: 0.0.0
 core:packages:
   - id: npm:@ai-souls/root
     updated: false
   - changelogIds:
-      - banner-shadow.md
-      - cli-settings.md
-      - commit-and-pr-screens-check-the-command.md
-      - death-headline-reads-as-type.md
-      - install-refreshes-the-copy.md
-      - macos-banner-placement.md
-      - no-settings-window.md
-      - tool-failed-off.md
-      - windows-cli-output.md
+      - banner-never-takes-focus-on-macos.md
+      - louder-out-of-the-box.md
+      - turn-complete-waits-for-subagents.md
     id: npm:ai-souls
     updated: true
 npm:packages:

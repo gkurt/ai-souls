@@ -1,3 +1,26 @@
+## ai-souls@0.4.1
+
+### A banner no longer takes focus from what you are working in (macOS)
+
+On macOS a screen would quietly become the active app while it was up,
+so keystrokes stopped going to the editor you were typing into. The
+banner process now refuses the foreground outright: it draws over
+everything, it stays click-through, and it never becomes the app in
+front.
+
+### Screens start at 40% volume
+
+Twenty was quiet enough to miss. Existing installs keep whatever they
+have set; `ai-souls reset all` takes the new level, and `--volume` still
+overrides it per event.
+
+### "Turn completed" no longer fires when the turn is waiting on a subagent
+
+Claude Code ends its turn the moment it hands work to a subagent, and
+ends it again when that work comes back — so half the banners you were
+getting announced the opposite of what had happened. The screen now
+waits for the turn that really did finish.
+
 ## ai-souls@0.4.0
 
 ### The bar has no border around it any more
