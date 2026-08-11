@@ -89,7 +89,7 @@ other five colours are there if you want them.
 
 Screens run seven seconds by default, long enough for the You Died sting
 to finish — set a shorter `--duration` if it is more banner than you
-wanted. Sounds start at 20%, because these arrive while you are
+wanted. Sounds start at 40%, because these arrive while you are
 concentrating.
 
 Arming or disarming an event changes which hooks exist, so run

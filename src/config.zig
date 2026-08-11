@@ -57,7 +57,7 @@ pub const min_duration_ms: u32 = 600;
 pub const max_duration_ms: u32 = 10_000;
 
 /// Starting playback level, 0..100.
-pub const default_volume: u8 = 20;
+pub const default_volume: u8 = 40;
 
 /// How long a screen stays up when it has nothing to say for itself.
 pub const default_duration_ms: u32 = 2600;
