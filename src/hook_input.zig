@@ -1,5 +1,7 @@
-//! The payload Claude Code writes to a hook's stdin, and the one
-//! question `fire` asks of it.
+//! The payload Claude Code writes to a hook's stdin, and the two
+//! questions `fire` asks of it.
+//!
+//! The first is which Bash call a narrowed row is looking at.
 //!
 //! A hook entry carries an `if` rule — `Bash(git commit:*)` — so that
 //! "Commit made" means the one Bash call that commits rather than every
@@ -16,35 +18,107 @@
 //! the decision. `fire` reads the payload and asks whether the command
 //! really runs what the row is about.
 //!
-//! Only the rows that name a command read stdin at all, and a payload we
+//! The second is whether a turn that ended actually ended. `Stop` fires
+//! when the main loop hands work to a subagent and parks to wait for it,
+//! exactly as it fires when the work is done, so "Turn completed" was
+//! drawing over turns that had done nothing of the kind. The payload
+//! carries `background_tasks` — the session's running and pending
+//! backgrounded work — and that is the difference between the two.
+//! Measured against 2.1.220, where the list is the task registry
+//! filtered to `running` and `pending` and each entry names its kind; it
+//! is not in the published hook reference, so treat it as something to
+//! re-check rather than something promised.
+//!
+//! Only the rows that ask something read stdin at all, and a payload we
 //! cannot make sense of means the screen draws. The gate is here to
-//! catch a hook that fired for the wrong Bash call, not to invent a new
-//! way to lose one.
+//! catch a hook that fired for the wrong Bash call, or a screen about to
+//! announce the wrong thing, not to invent a new way to lose one.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const souls = @import("souls.zig");
 
-/// Enough of the payload to hold `tool_input`. Claude Code writes it
-/// before `tool_response`, which is the part with no bound worth
-/// guessing — a `git log` call's output is as long as the repository.
-pub const max_bytes = 32 * 1024;
+/// Enough of the payload to hold whichever end of it is being read.
+/// See `Keep`: a payload longer than this is rolled past rather than
+/// truncated when the question is at the tail.
+const max_bytes = 32 * 1024;
 
-/// Is the Bash call described by `payload` really the one `event` is
-/// about?
+/// Which end of an over-long payload is worth keeping.
 ///
-/// Yes for every row that is not narrowed to a command, and yes for a
-/// payload with no command in it: see the module comment for why the
-/// unknown cases draw.
+/// The two questions live at opposite ends. The command is in
+/// `tool_input`, which Claude Code writes early, before the
+/// `tool_response` that is as long as a `git log` output. The background
+/// work is written last, after a `last_assistant_message` that is the
+/// whole of Claude's final reply and just as unbounded. A row asks one
+/// or the other, never both.
+const Keep = enum { head, tail };
+
+fn keepFor(event: souls.Event) ?Keep {
+    if (event.yields_to_background) return .tail;
+    if (event.requiredCommand().len > 0) return .head;
+    return null;
+}
+
+/// The gate `fire` puts in front of a screen: read what Claude Code
+/// piped us, and answer whether this row's screen is really about it.
+///
+/// A row that asks nothing of the payload never touches stdin.
+pub fn allowsPayload(io: std.Io, event: souls.Event) bool {
+    const keep = keepFor(event) orelse return true;
+    var buffer: [max_bytes]u8 = undefined;
+    return allows(event, readPayload(io, &buffer, keep));
+}
+
+/// The decision itself, over a payload already in hand.
+///
+/// Yes for every row that asks nothing, and yes for a payload with
+/// nothing to answer with: see the module comment for why the unknown
+/// cases draw.
 pub fn allows(event: souls.Event, payload: []u8) bool {
+    if (event.yields_to_background and subagentRunning(payload)) return false;
+
     const required = event.requiredCommand();
     if (required.len == 0) return true;
     const command = commandField(payload) orelse return true;
     return runsCommand(command, required);
 }
 
+/// Is the session parked on a subagent it launched?
+///
+/// `background_tasks` is written already filtered to the running and the
+/// pending, so an entry being there at all means it is still going. Only
+/// a subagent counts: a backgrounded shell command keeps running with
+/// the turn genuinely over, where a subagent is work the loop stopped to
+/// wait for.
+///
+/// Scoped to the list, the way `commandField` is scoped to `tool_input`.
+/// The scope is belt and braces here — a `"type"` inside a task's
+/// description arrives with its quotes escaped, so it can never match
+/// the key — but it keeps the scan off the rest of the payload.
+fn subagentRunning(payload: []const u8) bool {
+    const key = "\"type\"";
+    const start = std.mem.indexOf(u8, payload, "\"background_tasks\"") orelse return false;
+    const end = std.mem.indexOfPos(u8, payload, start, "\"session_crons\"") orelse payload.len;
+    const list = payload[start..end];
+
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, list, at, key)) |found| {
+        at = found + 1;
+        var after = skipSpace(list, found + key.len);
+        if (after >= list.len or list[after] != ':') continue;
+        after = skipSpace(list, after + 1);
+        if (std.mem.startsWith(u8, list[after..], "\"subagent\"")) return true;
+    }
+    return false;
+}
+
 /// Read what Claude Code piped us, as much of it as `buffer` holds.
-pub fn readPayload(io: std.Io, buffer: []u8) []u8 {
+///
+/// A payload longer than the buffer is not an error. `keep` says which
+/// end the caller's question lives at, and a `.tail` read rolls the
+/// buffer forward instead of stopping, so the end of the payload always
+/// survives however long the reply before it was.
+fn readPayload(io: std.Io, buffer: []u8, keep: Keep) []u8 {
     // Under `zig build test` this process's stdin is the build runner's
     // own protocol stream — the same reason `cli.say` writes nothing
     // there. Reading it would wedge the run, so the tests drive `allows`
@@ -58,7 +132,15 @@ pub fn readPayload(io: std.Io, buffer: []u8) []u8 {
     if (stdin.isTty(io) catch return buffer[0..0]) return buffer[0..0];
 
     var filled: usize = 0;
-    while (filled < buffer.len) {
+    while (true) {
+        if (filled == buffer.len) {
+            if (keep == .head) break;
+            // Half of what we are holding goes and the rest slides down,
+            // so a payload of any length still ends inside the buffer.
+            const half = filled / 2;
+            std.mem.copyForwards(u8, buffer[0 .. filled - half], buffer[half..filled]);
+            filled -= half;
+        }
         const chunk = stdin.readStreaming(io, &.{buffer[filled..]}) catch break;
         if (chunk == 0) break;
         filled += chunk;
@@ -290,6 +372,88 @@ test "a command counts only where it is the command being run" {
     };
     for (does_not) |command| {
         try testing.expect(!runsCommand(command, "git commit"));
+    }
+}
+
+/// A `Stop` payload shaped like the one Claude Code writes, with
+/// `tasks` as the body of its background work list — including the
+/// unbounded field written just before it, and the list written just
+/// after, so the scoping is under test and not only the scan.
+fn stopPayload(buffer: []u8, tasks: []const u8) []u8 {
+    return std.fmt.bufPrint(buffer,
+        \\{{"session_id":"abc","cwd":"/repo","hook_event_name":"Stop",
+        \\"stop_hook_active":false,"last_assistant_message":"Done — see above.",
+        \\"background_tasks":[{s}],"session_crons":[]}}
+    , .{tasks}) catch unreachable;
+}
+
+test "a turn that parked on a subagent is not a turn that completed" {
+    var buffer: [1024]u8 = undefined;
+    const turn = souls.events[souls.indexOfKey("turn_complete").?];
+
+    const waiting = stopPayload(&buffer,
+        \\{"id":"t1","type":"subagent","status":"running","description":"Explore the code","agent_type":"Explore"}
+    );
+    try testing.expect(!allows(turn, waiting));
+
+    // Pending counts too: the list is filtered to running and pending
+    // before it is written, so being in it at all is the whole signal.
+    const queued = stopPayload(&buffer,
+        \\{"id":"t1","type":"subagent","status":"pending","description":"Explore the code"}
+    );
+    try testing.expect(!allows(turn, queued));
+
+    // The turn that really did end — nothing running, or nothing but
+    // work that goes on without it.
+    try testing.expect(allows(turn, stopPayload(&buffer, "")));
+    try testing.expect(allows(turn, stopPayload(&buffer,
+        \\{"id":"t1","type":"shell","status":"running","command":"npm test"}
+    )));
+}
+
+test "a task's own description cannot pass itself off as a running subagent" {
+    // The scan reads keys, and a key inside a JSON string arrives with
+    // its quotes escaped — which is why the text below is a shell
+    // command in a description and not a second task.
+    var buffer: [1024]u8 = undefined;
+    const turn = souls.events[souls.indexOfKey("turn_complete").?];
+    const disguised = stopPayload(&buffer,
+        \\{"id":"t1","type":"shell","status":"running","description":"grep -rn '\"type\":\"subagent\"' src/"}
+    );
+    try testing.expect(allows(turn, disguised));
+}
+
+test "a payload with no background work in it draws" {
+    // The tail was rolled past, or Claude Code never wrote the list:
+    // either way this is the unknown case, and the unknown cases draw.
+    var buffer: [256]u8 = undefined;
+    const turn = souls.events[souls.indexOfKey("turn_complete").?];
+    try testing.expect(allows(turn, writable(&buffer,
+        \\{"hook_event_name":"Stop","stop_hook_active":false}
+    )));
+    try testing.expect(allows(turn, buffer[0..0]));
+
+    // And a row that is not about a turn ending never asks: a commit
+    // lands whether or not something else is still running.
+    const commit = souls.events[souls.indexOfKey("commit_made").?];
+    var wide: [1024]u8 = undefined;
+    const running = stopPayload(&wide,
+        \\{"id":"t1","type":"subagent","status":"running","description":"Explore the code"}
+    );
+    try testing.expect(allows(commit, running));
+}
+
+test "only the row that ends a turn reads the end of the payload" {
+    for (souls.events) |event| {
+        const keep = keepFor(event) orelse {
+            try testing.expectEqual(@as(usize, 0), event.requiredCommand().len);
+            try testing.expect(!event.yields_to_background);
+            continue;
+        };
+        switch (keep) {
+            .tail => try testing.expect(event.yields_to_background),
+            .head => try testing.expect(event.requiredCommand().len > 0),
+        }
     }
 }
 

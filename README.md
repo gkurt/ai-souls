@@ -46,15 +46,15 @@ Claude Code is the only agent wired up so far.
 
 On out of the box:
 
-| | |
-| --- | --- |
-| PR created | `gh pr create` succeeds |
-| Commit made | `git commit` succeeds |
-| Turn completed | Claude stops replying |
-| Question asked | a permission prompt or a nudge |
-| API error | auth, billing, a server fault |
-| Rate limited | the API tells you to wait |
-| Context compacted | compaction finishes |
+|                   |                                |
+| ----------------- | ------------------------------ |
+| PR created        | `gh pr create` succeeds        |
+| Commit made       | `git commit` succeeds          |
+| Turn completed    | Claude is done                 |
+| Question asked    | a permission prompt or a nudge |
+| API error         | auth, billing, a server fault  |
+| Rate limited      | the API tells you to wait      |
+| Context compacted | compaction finishes            |
 
 Off, and a switch away: a failed tool call, compaction starting,
 permission denied, a subagent finishing, and the ways a session begins
@@ -114,14 +114,14 @@ Anything that is not a verb is a headline, so quoting is optional:
 ai-souls PRAISE THE SUN --style victory --sound choir
 ```
 
-| Option | |
-| --- | --- |
-| `--style <name>` | death, bonfire, victory, soul, hollow, covenant |
-| `--sound <name>` | silent, gong, choir, chime, ember, thud, you-died |
-| `--volume <0-100>` | |
-| `--duration <ms>` | 600 to 10000 |
-| `--subtitle <text>` | |
-| `--` | everything after this is the message |
+| Option              |                                                   |
+| ------------------- | ------------------------------------------------- |
+| `--style <name>`    | death, bonfire, victory, soul, hollow, covenant   |
+| `--sound <name>`    | silent, gong, choir, chime, ember, thud, you-died |
+| `--volume <0-100>`  |                                                   |
+| `--duration <ms>`   | 600 to 10000                                      |
+| `--subtitle <text>` |                                                   |
+| `--`                | everything after this is the message              |
 
 `set` takes the same options, plus `--title <text>` and the bare words
 `on` / `off`.
@@ -141,11 +141,11 @@ is a no-op.
 Nothing stays running between banners — no daemon, no tray icon, no
 polling. Each screen is its own short-lived process.
 
-| Path | |
-| --- | --- |
-| `~/.ai-souls/config.txt` | your settings |
-| `~/.ai-souls/bin/` | the copy the hooks run, and its sounds |
-| `~/.claude/settings.json` | where the hooks live |
+| Path                      |                                        |
+| ------------------------- | -------------------------------------- |
+| `~/.ai-souls/config.txt`  | your settings                          |
+| `~/.ai-souls/bin/`        | the copy the hooks run, and its sounds |
+| `~/.claude/settings.json` | where the hooks live                   |
 
 ## Credits
 

@@ -41,7 +41,7 @@ in the foreground, that chatter lands on the hook's stdout.
 | `src/cli.zig` | every verb but the banner itself (`install`, `fire`, `set`, `status`, …) |
 | `src/console.zig` | where CLI output goes on Windows, where a GUI-subsystem binary has no terminal to print to |
 | `src/hooks.zig` | the JSON merge into `~/.claude/settings.json` |
-| `src/hook_input.zig` | the payload Claude Code writes to a hook's stdin, and the Bash call `fire` checks in it |
+| `src/hook_input.zig` | the payload Claude Code writes to a hook's stdin, and the two things `fire` reads out of it |
 | `src/paths.zig` | every path the app knows, resolved once |
 | `src/runtime_copy.zig` | the copy under `~/.ai-souls/bin` that installed hooks actually run |
 | `src/views.zig` | the banner's widget tree |
@@ -127,6 +127,16 @@ Invariants worth knowing before you change things:
   Everything unknown draws: no payload, a tty, a shape we cannot
   parse. See `hook_input.zig`, and never make a new row's correctness
   rest on `if` alone.
+- **A turn that ended is not always a turn that finished.** `Stop`
+  fires when the main loop hands work to a subagent and parks, exactly
+  as it fires when the work is done, so `turn_complete` sets
+  `yields_to_background` and `fire` stands the screen down while the
+  payload's `background_tasks` still names a running subagent. That
+  list is written at the very END of the payload, after an unbounded
+  `last_assistant_message` — which is why `readPayload` takes a `Keep`
+  and rolls its buffer forward rather than truncating. Read it off
+  2.1.220's bundle, not the published hook reference; re-check it if a
+  screen starts lying again.
 - **The throttle is a file, and it is decided before the window opens.**
   `fire` reads `~/.ai-souls/fired.txt`, and a screen it decides against
   costs one read and exits `handled_ok` — a hook that reported failure

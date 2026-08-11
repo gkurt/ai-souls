@@ -196,6 +196,17 @@ pub const Event = struct {
     /// `hook_input`.
     condition: []const u8 = "",
 
+    /// Whether this row's screen stands down while the session still
+    /// has backgrounded work of its own running.
+    ///
+    /// One row needs it. `Stop` fires when the main loop hands work to a
+    /// subagent and parks to wait, and again when that work comes back
+    /// and it really is done — so half of what "Turn completed" draws
+    /// over is a turn that has not completed at all. The payload carries
+    /// the running work, so the two are told apart before a window
+    /// opens; see `hook_input`.
+    yields_to_background: bool = false,
+
     /// Shortest gap between two of THIS event's screens, in
     /// milliseconds.
     ///
@@ -359,8 +370,11 @@ pub const events = [_]Event{
     .{
         .key = "turn_complete",
         .label = "Turn completed",
-        .blurb = "Claude finishes responding.",
+        .blurb = "Claude finishes responding, with nothing left running behind it.",
         .hook_event = "Stop",
+        // Half the turns that end are turns that parked on a subagent,
+        // and this screen said the opposite of what had happened.
+        .yields_to_background = true,
         // Fires at the end of every single turn, and `Stop` lands a
         // second or two after the last tool call — so it is the screen
         // most likely to be standing in front of something better.
@@ -742,6 +756,22 @@ test "a row narrowed to one command names one we can check for ourselves" {
         "",
         events[indexOfKey("turn_complete").?].requiredCommand(),
     );
+}
+
+test "the row that stands down for background work is the one about a turn ending" {
+    for (events) |event| {
+        const yields = std.mem.eql(u8, event.key, "turn_complete");
+        try std.testing.expectEqual(yields, event.yields_to_background);
+        if (!yields) continue;
+        // The list it stands down on is written into the end-of-turn
+        // payload and nowhere else, so no other kind of row could ask.
+        try std.testing.expectEqualStrings("Stop", event.hook_event);
+    }
+
+    // Not the subagent's own screen: a fan-out finishing one agent at a
+    // time is news each time, however many are still going.
+    const subagent = events[indexOfKey("subagent_done").?];
+    try std.testing.expect(!subagent.yields_to_background);
 }
 
 test "a matcher that is an alternation carries a readable label" {
